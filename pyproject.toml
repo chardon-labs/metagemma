@@ -1,0 +1,38 @@
+[project]
+name = "unicorn-mafia-grpo"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "flash-linear-attention>=0.3.2",
+    "math-verify>=0.9.0",
+    "peft>=0.19.1",
+    "torch>=2.7.0",
+    "transformers>=4.56.0,<5",
+    "trl[vllm]>=1.2.0",
+    "vllm>=0.17.0,<=0.18.0",
+    "wandb>=0.23.0",
+]
+
+[project.optional-dependencies]
+conv1d = [
+    "causal-conv1d>=1.6.0",
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+vllm = [
+    { index = "pypi", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
