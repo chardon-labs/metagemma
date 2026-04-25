@@ -1,6 +1,7 @@
-# Qwen3.5 GRPO on GSM8K
+# Gemma 3 GRPO and Confidence SFT on GSM8K
 
-Minimal TRL GRPO training script for `Qwen/Qwen3.5-0.8B` on `openai/gsm8k`.
+Minimal TRL GRPO training script plus an experimental confidence-logit SFT path for
+`google/gemma-3-1b-it` on `openai/gsm8k`.
 
 ```bash
 uv run python train.py
@@ -18,7 +19,7 @@ Current defaults:
 - `ENABLE_THINKING = True`
 - reward functions: `math_verify_reward`, `exact_match_reward`, and `format_reward`
 
-vLLM is enabled by default. TRL currently supports vLLM versions from `0.12.0` to `0.18.0`, so the project pins `vllm>=0.17.0,<=0.18.0`. vLLM's `v0.17.0` docs include native `Qwen3_5ForConditionalGeneration` support, so the script uses the native vLLM model implementation.
+vLLM is enabled by default. TRL currently supports vLLM versions from `0.12.0` to `0.18.0`, so the project pins `vllm>=0.17.0,<=0.18.0`.
 
 On the server, after syncing:
 
@@ -28,6 +29,67 @@ uv run python -c "import vllm; print(vllm.__version__)"
 ```
 
 The reward tracker prints one line per question group, not per flattened reward call.
+
+## Confidence SFT
+
+The confidence SFT experiment trains the model so `sigmoid(logits[..., 6])` acts as a
+running confidence that the final answer will verify as correct. Gemma's `<unused0>`
+token is expected to resolve to token id `6`; both scripts check this before running.
+
+First generate trace shards with vLLM:
+
+```bash
+uv run python generate_trace.py
+```
+
+Configuration is hardcoded as constants at the top of `generate_trace.py`. Defaults use a
+small test split:
+
+- `250` shuffled GSM8K train problems for SFT
+- `50` shuffled GSM8K train problems for eval
+- `16` completions per problem
+- `20` top logprobs per generated token
+- token id `6` suppressed during generation and removed from KL targets
+
+Then run the confidence SFT:
+
+```bash
+uv run python finetune.py
+```
+
+`finetune.py` is also configured by constants at the top of the file. It uses LoRA by
+default and trains a small row-6 confidence vector separately, then copies it into
+`lm_head.weight[6]` at save time. This avoids allocating Adam state for Gemma's full tied
+embedding/lm-head matrix. With PEFT enabled, the output directory contains the adapter plus
+`unused0_lm_head_row.pt`; set `SAVE_FULL_MODEL = True` for a merged full-model save.
+
+Default SFT batching is `TRAIN_BATCH_SIZE = 4` with `GRADIENT_ACCUMULATION_STEPS = 4`,
+so each optimizer step sees `16` completion traces. Confidence metrics include final-token
+and last-10%-of-tokens accuracy, balanced accuracy, AUROC, and Brier score.
+`BALANCE_TRAIN_BATCHES = True` arranges each microbatch to contain both correct and
+incorrect traces when both classes exist, without oversampling or changing epoch class
+counts.
+
+Trace files are written as paired shards:
+
+```text
+trace-00000.meta.parquet
+trace-00000.arrays.npz
+```
+
+The Parquet metadata has one row per completion, including offsets into the arrays. The NPZ
+payload stores fixed-size tensors:
+
+```text
+prompt_token_ids: int32[total_prompt_tokens]
+completion_token_ids: int32[total_completion_tokens]
+top_logprob_token_ids: int32[total_completion_tokens, 20]
+top_logprobs: float32[total_completion_tokens, 20]
+top_logprob_mask: bool[total_completion_tokens, 20]
+```
+
+For gated Google Gemma access, authenticate with Hugging Face or export `HF_TOKEN` in your
+shell; do not commit tokens to the repo.
 
 ## Logging
 

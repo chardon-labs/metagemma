@@ -11,8 +11,8 @@ from datasets import Dataset, load_dataset
 from math_verify import parse, verify
 
 
-MODEL_ID = "Qwen/Qwen3-0.6B"
-OUTPUT_DIR = "outputs/qwen3-0.5b-gsm8k-grpo"
+MODEL_ID = "google/gemma-3-1b-it"
+OUTPUT_DIR = "outputs/model-gsm8k-grpo"
 MAX_TRAIN_SAMPLES = 2048
 MAX_EVAL_SAMPLES = 128
 MAX_COMPLETION_LENGTH = 512
