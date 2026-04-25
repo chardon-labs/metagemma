@@ -36,9 +36,9 @@ MODEL_ID = DEFAULT_MODEL_ID
 TOKENIZER_ID: str | None = DEFAULT_TOKENIZER_ID
 TRACE_DIR = Path(DEFAULT_TRACE_DIR)
 OUTPUT_DIR = Path(DEFAULT_OUTPUT_DIR)
-TRAIN_BATCH_SIZE = 4
-EVAL_BATCH_SIZE = 4
-GRADIENT_ACCUMULATION_STEPS = 4
+TRAIN_BATCH_SIZE = 1
+EVAL_BATCH_SIZE = 1
+GRADIENT_ACCUMULATION_STEPS = 16
 LEARNING_RATE = 5e-5
 CONFIDENCE_LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 0.0
@@ -54,6 +54,7 @@ MAX_GRAD_NORM = 1.0
 BF16 = True
 FP16 = False
 USE_PEFT = True
+USE_GRADIENT_CHECKPOINTING = True
 LORA_R = 16
 LORA_ALPHA = 32
 LORA_DROPOUT = 0.05
@@ -88,6 +89,7 @@ class FinetuneConfig:
     bf16: bool = BF16
     fp16: bool = FP16
     use_peft: bool = USE_PEFT
+    use_gradient_checkpointing: bool = USE_GRADIENT_CHECKPOINTING
     lora_r: int = LORA_R
     lora_alpha: int = LORA_ALPHA
     lora_dropout: float = LORA_DROPOUT
@@ -273,6 +275,47 @@ def build_peft_model(model: nn.Module, config: FinetuneConfig) -> nn.Module:
     return peft_model
 
 
+def configure_memory_saving(model: nn.Module, config: FinetuneConfig) -> None:
+    if not config.use_gradient_checkpointing:
+        return
+
+    model_any = cast(Any, model)
+    if hasattr(model_any, "config"):
+        model_any.config.use_cache = False
+    if hasattr(model_any, "gradient_checkpointing_enable"):
+        model_any.gradient_checkpointing_enable()
+    if hasattr(model_any, "enable_input_require_grads"):
+        model_any.enable_input_require_grads()
+    LOGGER.info("Enabled gradient checkpointing.")
+
+
+def causal_lm_text_model(model: nn.Module) -> nn.Module:
+    model_any = cast(Any, model)
+    if hasattr(model_any, "get_base_model"):
+        model_any = model_any.get_base_model()
+
+    for attr_name in ("model", "language_model"):
+        if hasattr(model_any, attr_name):
+            return cast(nn.Module, getattr(model_any, attr_name))
+
+    raise AttributeError("Could not find text backbone on causal LM model.")
+
+
+def forward_last_hidden_state(
+    *,
+    model: nn.Module,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> torch.Tensor:
+    text_model = causal_lm_text_model(model)
+    outputs = text_model(
+        input_ids=input_ids,
+        attention_mask=attention_mask,
+        use_cache=False,
+    )
+    return cast(torch.Tensor, outputs.last_hidden_state)
+
+
 def collate_trace_batch(samples: list[dict[str, Any]], *, pad_token_id: int) -> dict[str, torch.Tensor]:
     max_input_len = max(len(sample["prompt_token_ids"]) + len(sample["completion_token_ids"]) for sample in samples)
     max_target_len = max(len(sample["completion_token_ids"]) for sample in samples)
@@ -456,16 +499,16 @@ def compute_loss(
     teacher_mask = batch["teacher_mask"]
     labels = batch["labels"]
 
-    outputs = model(
+    full_hidden = forward_last_hidden_state(
+        model=model,
         input_ids=input_ids,
         attention_mask=attention_mask,
-        output_hidden_states=True,
-        use_cache=False,
     )
-    logits = selected_token_state(outputs.logits, target_positions).float()
-    hidden = selected_token_state(outputs.hidden_states[-1], target_positions).float()
-    confidence_logits = torch.matmul(hidden, confidence_row.float())
+    hidden = selected_token_state(full_hidden, target_positions)
+    confidence_logits = torch.matmul(hidden.float(), confidence_row.float())
 
+    lm_head = cast(Any, model).get_output_embeddings()
+    logits = lm_head(hidden)
     valid_teacher_tokens = teacher_mask.any(dim=-1)
     kl_token_mask = target_mask & valid_teacher_tokens
     safe_teacher_ids = teacher_token_ids.clamp_min(0)
@@ -516,11 +559,11 @@ def compute_loss(
             tail_confidence_tensor = torch.cat(tail_confidences)
             tail_label_tensor = torch.cat(tail_label_values)
         else:
-            final_confidence_tensor = torch.empty((0,), device=logits.device)
-            final_label_tensor = torch.empty((0,), device=logits.device)
-            final_confidence_mean = torch.tensor(float("nan"), device=logits.device)
-            tail_confidence_tensor = torch.empty((0,), device=logits.device)
-            tail_label_tensor = torch.empty((0,), device=logits.device)
+            final_confidence_tensor = torch.empty((0,), device=confidence_logits.device)
+            final_label_tensor = torch.empty((0,), device=confidence_logits.device)
+            final_confidence_mean = torch.tensor(float("nan"), device=confidence_logits.device)
+            tail_confidence_tensor = torch.empty((0,), device=confidence_logits.device)
+            tail_label_tensor = torch.empty((0,), device=confidence_logits.device)
 
         metrics = {
             "loss": float(loss.detach().cpu()),
@@ -731,6 +774,7 @@ def train() -> None:
         torch_dtype=dtype_from_config(config),
     )
     model = build_peft_model(model, config)
+    configure_memory_saving(model, config)
     model.to(device)
     model.train()
 

@@ -21,6 +21,9 @@ uv sync
 uv run python finetune.py
 ```
 
+The fine-tuning script defaults to memory-saving settings: train/eval batch size 1
+and gradient checkpointing enabled.
+
 Both scripts keep shared artifacts at the repo root:
 
 - `traces/` for generated trace shards
@@ -47,3 +50,8 @@ Trace generation now uses a mixed verifiable dataset registry:
 
 Generation enables Gemma thinking and caps each saved trace at 2048 total tokens
 including prompt and completion.
+
+Default generation is intentionally small: 50 SFT problems and 10 eval problems
+per dataset, with 8 generations per problem. Adjust `DATASET_SAMPLE_COUNTS` in
+`data_generation/dataset_specs.py` or `NUM_GENERATIONS` in
+`data_generation/generate_trace.py` for larger runs.
