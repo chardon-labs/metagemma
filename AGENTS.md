@@ -1,3 +1,4 @@
 - Use `ty check {file.py}` for any Python file that you touch, for type checking. `ty` is installed globally. Avoid using `Any`, `object` or any other workarounds unless needed at boundaries.
 - If you need to execute Python with imported dependencies from `pyproject.toml`, use the environment in `.venv/`
 - Avoid CLI options for scripts, prefer hard-coded constants
+- Prefer concise responses without skipping on details. Prioritize information density.
