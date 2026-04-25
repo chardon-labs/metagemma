@@ -10,7 +10,7 @@ dependencies = [
     "peft>=0.19.1",
     "pyarrow>=22.0.0",
     "torch>=2.7.0",
-    "transformers>=4.56.0,<5",
+    "transformers>=5.5.1,<6",
     "trl>=1.2.0",
     "wandb>=0.23.0",
 ]

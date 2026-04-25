@@ -698,7 +698,10 @@ def train() -> None:
     tokenizer_id = config.tokenizer_id or config.model_id
     wandb_run = initialize_wandb(config)
 
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True)
+    tokenizer = cast(
+        PreTrainedTokenizerBase,
+        AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True),
+    )
     verify_confidence_token(tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
