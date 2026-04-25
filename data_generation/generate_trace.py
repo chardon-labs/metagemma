@@ -50,7 +50,7 @@ GPU_MEMORY_UTILIZATION = 0.85
 ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
 DTYPE: ModelDType = "auto"
 TENSOR_PARALLEL_SIZE = 1
-PROMPT_BATCH_SIZE = 16
+MAX_PROMPTS_PER_GENERATE: int | None = None
 SHARD_SIZE = 512
 SKIP_EVAL_GENERATION = False
 
@@ -73,14 +73,23 @@ class GenerateTraceConfig:
     gpu_memory_utilization: float = GPU_MEMORY_UTILIZATION
     dtype: ModelDType = DTYPE
     tensor_parallel_size: int = TENSOR_PARALLEL_SIZE
-    prompt_batch_size: int = PROMPT_BATCH_SIZE
+    max_prompts_per_generate: int | None = MAX_PROMPTS_PER_GENERATE
     shard_size: int = SHARD_SIZE
     skip_eval_generation: bool = SKIP_EVAL_GENERATION
 
 
-def batched(items: Sequence[Mapping[str, Any]], batch_size: int) -> Iterable[Sequence[Mapping[str, Any]]]:
-    for start in range(0, len(items), batch_size):
-        yield items[start : start + batch_size]
+def prompt_batches(
+    items: Sequence[Mapping[str, Any]],
+    max_prompts_per_generate: int | None,
+) -> Iterable[Sequence[Mapping[str, Any]]]:
+    if max_prompts_per_generate is None:
+        yield items
+        return
+    if max_prompts_per_generate <= 0:
+        raise ValueError("max_prompts_per_generate must be positive when set.")
+
+    for start in range(0, len(items), max_prompts_per_generate):
+        yield items[start : start + max_prompts_per_generate]
 
 
 def make_sampling_params(config: GenerateTraceConfig) -> SamplingParams:
@@ -272,7 +281,17 @@ def generate_split(
         "forbidden_token_id": CONFIDENCE_TOKEN_ID,
     }
 
-    for problem_batch in batched(problems, config.prompt_batch_size):
+    if config.max_prompts_per_generate is None:
+        LOGGER.info("Submitting all %s %s prompts to vLLM in one generate call", len(problems), split)
+    else:
+        LOGGER.info(
+            "Submitting %s %s prompts to vLLM in chunks of %s",
+            len(problems),
+            split,
+            config.max_prompts_per_generate,
+        )
+
+    for problem_batch in prompt_batches(problems, config.max_prompts_per_generate):
         prompt_texts, prompt_ids, prompt_records = build_prompts(
             tokenizer=tokenizer,
             split=split,
