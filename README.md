@@ -30,8 +30,9 @@ The old GRPO/RL loop has been removed.
 
 ## Step 2: Gemma 4
 
-Next, switch the defaults to `gemma-4-E2B-it` and inspect the tokenizer to choose the
-confidence token id instead of assuming Gemma 3's `<unused0>` id.
+Defaults now target `google/gemma-4-E2B-it`. The tokenizer assets are stored in
+`tokenizers/gemma-4-E2B-it/`, and `project_settings.json` selects `<unused0>` as the
+confidence token. In the Gemma 4 E2B tokenizer, `<unused0>` resolves to token id `6`.
 
 ## Step 3: More Evaluation Data
 

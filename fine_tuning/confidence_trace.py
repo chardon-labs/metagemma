@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, TypeAlias, cast
+from typing import Any, TypeAlias, TypedDict, cast
 
 import numpy as np
 import pyarrow as pa
@@ -19,15 +19,31 @@ from transformers import PreTrainedTokenizerBase
 LOGGER = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_MODEL_ID = "google/gemma-3-1b-it"
-DEFAULT_OUTPUT_DIR = str(REPO_ROOT / "outputs/gemma-3-1b-it-confidence")
-DEFAULT_TRACE_DIR = str(REPO_ROOT / "traces/gemma-3-1b-it-gsm8k-confidence")
-UNUSED0_TOKEN = "<unused0>"
-UNUSED0_TOKEN_ID = 6
-SYSTEM_PROMPT = (
-    "Solve the following math problem. Give the final answer in the format: "
-    "#### <answer>"
-)
+SETTINGS_PATH = REPO_ROOT / "project_settings.json"
+
+
+class ProjectSettings(TypedDict):
+    model_id: str
+    tokenizer_id: str
+    confidence_token: str
+    confidence_token_id: int
+    trace_dir: str
+    output_dir: str
+    system_prompt: str
+
+
+def load_project_settings() -> ProjectSettings:
+    return cast(ProjectSettings, json.loads(SETTINGS_PATH.read_text(encoding="utf-8")))
+
+
+PROJECT_SETTINGS = load_project_settings()
+DEFAULT_MODEL_ID = PROJECT_SETTINGS["model_id"]
+DEFAULT_TOKENIZER_ID = str((REPO_ROOT / PROJECT_SETTINGS["tokenizer_id"]).resolve())
+DEFAULT_OUTPUT_DIR = str(REPO_ROOT / PROJECT_SETTINGS["output_dir"])
+DEFAULT_TRACE_DIR = str(REPO_ROOT / PROJECT_SETTINGS["trace_dir"])
+CONFIDENCE_TOKEN = PROJECT_SETTINGS["confidence_token"]
+CONFIDENCE_TOKEN_ID = PROJECT_SETTINGS["confidence_token_id"]
+SYSTEM_PROMPT = PROJECT_SETTINGS["system_prompt"]
 
 ChatMessage: TypeAlias = dict[str, str]
 
@@ -118,11 +134,11 @@ def prompt_token_ids(tokenizer: PreTrainedTokenizerBase, prompt_text: str) -> np
     return np.asarray(encoded["input_ids"], dtype=np.int32)
 
 
-def verify_unused0_token(tokenizer: PreTrainedTokenizerBase) -> None:
-    token_id = tokenizer.convert_tokens_to_ids(UNUSED0_TOKEN)
-    if token_id != UNUSED0_TOKEN_ID:
+def verify_confidence_token(tokenizer: PreTrainedTokenizerBase) -> None:
+    token_id = tokenizer.convert_tokens_to_ids(CONFIDENCE_TOKEN)
+    if token_id != CONFIDENCE_TOKEN_ID:
         raise ValueError(
-            f"{UNUSED0_TOKEN} resolved to token id {token_id}, expected {UNUSED0_TOKEN_ID}."
+            f"{CONFIDENCE_TOKEN} resolved to token id {token_id}, expected {CONFIDENCE_TOKEN_ID}."
         )
 
 

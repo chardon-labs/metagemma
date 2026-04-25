@@ -18,21 +18,22 @@ from torch.utils.data import BatchSampler, DataLoader, Dataset, RandomSampler
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
 from confidence_trace import (
+    CONFIDENCE_TOKEN_ID,
     DEFAULT_MODEL_ID,
     DEFAULT_OUTPUT_DIR,
+    DEFAULT_TOKENIZER_ID,
     DEFAULT_TRACE_DIR,
-    UNUSED0_TOKEN_ID,
     configure_logging,
     load_manifest,
     read_trace_metadata,
-    verify_unused0_token,
+    verify_confidence_token,
 )
 
 
 LOGGER = logging.getLogger(__name__)
 
 MODEL_ID = DEFAULT_MODEL_ID
-TOKENIZER_ID: str | None = None
+TOKENIZER_ID: str | None = DEFAULT_TOKENIZER_ID
 TRACE_DIR = Path(DEFAULT_TRACE_DIR)
 OUTPUT_DIR = Path(DEFAULT_OUTPUT_DIR)
 TRAIN_BATCH_SIZE = 4
@@ -470,7 +471,7 @@ def compute_loss(
     safe_teacher_ids = teacher_token_ids.clamp_min(0)
 
     kl_logits = logits.clone()
-    kl_logits[..., UNUSED0_TOKEN_ID] = torch.finfo(kl_logits.dtype).min
+    kl_logits[..., CONFIDENCE_TOKEN_ID] = torch.finfo(kl_logits.dtype).min
     student_logprobs = F.log_softmax(kl_logits, dim=-1)
     student_teacher_logprobs = torch.gather(student_logprobs, dim=-1, index=safe_teacher_ids)
 
@@ -664,9 +665,9 @@ def save_outputs(
     model_any = cast(Any, model)
     lm_head = model_any.get_output_embeddings()
     with torch.no_grad():
-        lm_head.weight[UNUSED0_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
+        lm_head.weight[CONFIDENCE_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
 
-    torch.save(confidence_row.detach().cpu(), config.output_dir / "unused0_lm_head_row.pt")
+    torch.save(confidence_row.detach().cpu(), config.output_dir / "confidence_lm_head_row.pt")
     (config.output_dir / "confidence_sft_config.json").write_text(
         json.dumps(config_dict(config), indent=2, sort_keys=True),
         encoding="utf-8",
@@ -677,15 +678,15 @@ def save_outputs(
         merged = model_any.merge_and_unload()
         lm_head = merged.get_output_embeddings()
         with torch.no_grad():
-            lm_head.weight[UNUSED0_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
+            lm_head.weight[CONFIDENCE_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
         merged.save_pretrained(config.output_dir)
     elif not config.use_peft or config.save_full_model:
         model_any.save_pretrained(config.output_dir)
     else:
         model_any.save_pretrained(config.output_dir)
         LOGGER.info(
-            "Saved PEFT adapter plus unused0_lm_head_row.pt. Copy that row into lm_head.weight[%s] when loading.",
-            UNUSED0_TOKEN_ID,
+            "Saved PEFT adapter plus confidence_lm_head_row.pt. Copy that row into lm_head.weight[%s] when loading.",
+            CONFIDENCE_TOKEN_ID,
         )
 
 
@@ -698,7 +699,7 @@ def train() -> None:
     wandb_run = initialize_wandb(config)
 
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True)
-    verify_unused0_token(tokenizer)
+    verify_confidence_token(tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -736,7 +737,7 @@ def train() -> None:
     tied = lm_head.weight.data_ptr() == input_embeddings.weight.data_ptr()
     LOGGER.info("lm_head/input embeddings tied: %s", tied)
     with torch.no_grad():
-        lm_head.weight[UNUSED0_TOKEN_ID].zero_()
+        lm_head.weight[CONFIDENCE_TOKEN_ID].zero_()
 
     confidence_row = nn.Parameter(
         torch.zeros(

@@ -11,9 +11,10 @@ from transformers import AutoTokenizer, PreTrainedTokenizerBase
 from vllm import LLM, SamplingParams
 
 from confidence_trace import (
+    CONFIDENCE_TOKEN_ID,
     DEFAULT_MODEL_ID,
+    DEFAULT_TOKENIZER_ID,
     DEFAULT_TRACE_DIR,
-    UNUSED0_TOKEN_ID,
     TraceManifest,
     apply_chat_template,
     configure_logging,
@@ -23,7 +24,7 @@ from confidence_trace import (
     math_verify_label,
     prepare_gsm8k_problem_splits,
     prompt_token_ids,
-    verify_unused0_token,
+    verify_confidence_token,
     write_manifest,
     write_trace_shard,
 )
@@ -33,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 MODEL_ID = DEFAULT_MODEL_ID
-TOKENIZER_ID: str | None = None
+TOKENIZER_ID: str | None = DEFAULT_TOKENIZER_ID
 OUTPUT_DIR = Path(DEFAULT_TRACE_DIR)
 SEED = 42
 SFT_PROBLEMS = 250
@@ -92,7 +93,7 @@ def make_sampling_params(config: GenerateTraceConfig) -> SamplingParams:
         max_tokens=config.max_tokens,
         logprobs=config.logprobs_k,
         seed=config.seed,
-        logit_bias={UNUSED0_TOKEN_ID: -100.0},
+        logit_bias={CONFIDENCE_TOKEN_ID: -100.0},
     )
 
 
@@ -240,7 +241,7 @@ def completion_logprob_arrays(
         step_ids, step_values, step_mask = fixed_top_logprobs(
             cast(Mapping[int, Any], step_logprobs),
             k=k,
-            forbidden_token_id=UNUSED0_TOKEN_ID,
+            forbidden_token_id=CONFIDENCE_TOKEN_ID,
         )
         token_ids.append(step_ids)
         values.append(step_values)
@@ -268,7 +269,7 @@ def generate_split(
         "top_k": config.top_k,
         "max_tokens": config.max_tokens,
         "logprobs_k": config.logprobs_k,
-        "forbidden_token_id": UNUSED0_TOKEN_ID,
+        "forbidden_token_id": CONFIDENCE_TOKEN_ID,
     }
 
     for problem_batch in batched(problems, config.prompt_batch_size):
@@ -320,7 +321,7 @@ def main() -> None:
         PreTrainedTokenizerBase,
         AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True),
     )
-    verify_unused0_token(tokenizer)
+    verify_confidence_token(tokenizer)
 
     sft_split, eval_split = prepare_gsm8k_problem_splits(
         seed=config.seed,
@@ -368,7 +369,7 @@ def main() -> None:
             num_generations=config.num_generations,
             max_tokens=config.max_tokens,
             logprobs_k=config.logprobs_k,
-            forbidden_token_id=UNUSED0_TOKEN_ID,
+            forbidden_token_id=CONFIDENCE_TOKEN_ID,
             shards=builder.shards,
         ),
     )

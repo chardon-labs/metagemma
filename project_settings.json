@@ -1,0 +1,9 @@
+{
+  "model_id": "google/gemma-4-E2B-it",
+  "tokenizer_id": "tokenizers/gemma-4-E2B-it",
+  "confidence_token": "<unused0>",
+  "confidence_token_id": 6,
+  "trace_dir": "traces/gemma-4-E2B-it-gsm8k-confidence",
+  "output_dir": "outputs/gemma-4-E2B-it-confidence",
+  "system_prompt": "Solve the following math problem. Give the final answer in the format: #### <answer>"
+}
