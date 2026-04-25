@@ -36,5 +36,14 @@ confidence token. In the Gemma 4 E2B tokenizer, `<unused0>` resolves to token id
 
 ## Step 3: More Evaluation Data
 
-After that, add 4-5 verifiable datasets beyond GSM8K, covering math, knowledge, and
-hallucination-sensitive tasks, then raise generation length enough for those tasks.
+Trace generation now uses a mixed verifiable dataset registry:
+
+- GSM8K
+- MATH-500
+- MMLU-Pro
+- ARC-Challenge
+- TruthfulQA MC1
+- FEVER
+
+Generation enables Gemma thinking and caps each saved trace at 2048 total tokens
+including prompt and completion.

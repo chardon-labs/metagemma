@@ -29,7 +29,6 @@ class ProjectSettings(TypedDict):
     confidence_token_id: int
     trace_dir: str
     output_dir: str
-    system_prompt: str
 
 
 def load_project_settings() -> ProjectSettings:
@@ -43,7 +42,8 @@ DEFAULT_OUTPUT_DIR = str(REPO_ROOT / PROJECT_SETTINGS["output_dir"])
 DEFAULT_TRACE_DIR = str(REPO_ROOT / PROJECT_SETTINGS["trace_dir"])
 CONFIDENCE_TOKEN = PROJECT_SETTINGS["confidence_token"]
 CONFIDENCE_TOKEN_ID = PROJECT_SETTINGS["confidence_token_id"]
-SYSTEM_PROMPT = PROJECT_SETTINGS["system_prompt"]
+MATH_PARSE_TIMEOUT_SECONDS = 2
+MATH_VERIFY_TIMEOUT_SECONDS = 2
 
 ChatMessage: TypeAlias = dict[str, str]
 
@@ -71,6 +71,9 @@ class TraceManifest:
     logprobs_k: int
     forbidden_token_id: int
     shards: list[dict[str, str]]
+    max_sequence_length: int | None = None
+    enable_thinking: bool | None = None
+    datasets: list[dict[str, Any]] | None = None
 
 
 def configure_logging() -> None:
@@ -98,33 +101,55 @@ def extract_prediction(text: str) -> str:
     if match is not None:
         return normalize_number(match.group(1))
 
-    parsed = parse(text)
+    try:
+        parsed = parse(text, parsing_timeout=MATH_PARSE_TIMEOUT_SECONDS)
+    except Exception:
+        parsed = []
     if parsed:
-        return str(parsed[0])
+        try:
+            return str(parsed[0])
+        except Exception:
+            pass
 
     numbers = _NUMBER_RE.findall(text)
     return normalize_number(numbers[-1]) if numbers else text.strip()
 
 
 def math_verify_label(completion: str, gold_answer: str) -> int:
-    gold = parse(f"#### {gold_answer}")
-    target = parse(completion)
-    return int(bool(gold and target and verify(gold, target)))
+    gold = parse(f"#### {gold_answer}", parsing_timeout=MATH_PARSE_TIMEOUT_SECONDS)
+    target = parse(completion, parsing_timeout=MATH_PARSE_TIMEOUT_SECONDS)
+    return int(
+        bool(
+            gold
+            and target
+            and verify(
+                gold,
+                target,
+                timeout_seconds=MATH_VERIFY_TIMEOUT_SECONDS,
+            )
+        )
+    )
 
 
-def format_prompt(question: str) -> list[ChatMessage]:
+def format_prompt(question: str, *, system_prompt: str) -> list[ChatMessage]:
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
 
 
-def apply_chat_template(tokenizer: PreTrainedTokenizerBase, messages: Sequence[Mapping[str, str]]) -> str:
+def apply_chat_template(
+    tokenizer: PreTrainedTokenizerBase,
+    messages: Sequence[Mapping[str, str]],
+    *,
+    enable_thinking: bool = False,
+) -> str:
     conversation = [dict(message) for message in messages]
     rendered = tokenizer.apply_chat_template(
         conversation,
         tokenize=False,
         add_generation_prompt=True,
+        enable_thinking=enable_thinking,
     )
     return cast(str, rendered)
 

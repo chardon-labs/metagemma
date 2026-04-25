@@ -18,16 +18,15 @@ from confidence_trace import (
     TraceManifest,
     apply_chat_template,
     configure_logging,
-    extract_prediction,
     fixed_top_logprobs,
     format_prompt,
-    math_verify_label,
-    prepare_gsm8k_problem_splits,
     prompt_token_ids,
     verify_confidence_token,
     write_manifest,
     write_trace_shard,
 )
+from dataset_specs import dataset_manifest_entries, prepare_problem_splits
+from scorers import score_completion
 
 
 LOGGER = logging.getLogger(__name__)
@@ -37,10 +36,10 @@ MODEL_ID = DEFAULT_MODEL_ID
 TOKENIZER_ID: str | None = DEFAULT_TOKENIZER_ID
 OUTPUT_DIR = Path(DEFAULT_TRACE_DIR)
 SEED = 42
-SFT_PROBLEMS = 250
-EVAL_PROBLEMS = 50
-NUM_GENERATIONS = 16
-MAX_TOKENS = 512
+NUM_GENERATIONS = 8
+MAX_SEQUENCE_LENGTH = 2048
+MAX_TOKENS = 2048
+ENABLE_THINKING = True
 LOGPROBS_K = 20
 TEMPERATURE = 1.0
 TOP_P = 0.95
@@ -61,10 +60,10 @@ class GenerateTraceConfig:
     tokenizer_id: str | None = TOKENIZER_ID
     output_dir: Path = OUTPUT_DIR
     seed: int = SEED
-    sft_problems: int = SFT_PROBLEMS
-    eval_problems: int = EVAL_PROBLEMS
     num_generations: int = NUM_GENERATIONS
+    max_sequence_length: int = MAX_SEQUENCE_LENGTH
     max_tokens: int = MAX_TOKENS
+    enable_thinking: bool = ENABLE_THINKING
     logprobs_k: int = LOGPROBS_K
     temperature: float = TEMPERATURE
     top_p: float = TOP_P
@@ -92,14 +91,14 @@ def prompt_batches(
         yield items[start : start + max_prompts_per_generate]
 
 
-def make_sampling_params(config: GenerateTraceConfig) -> SamplingParams:
+def make_sampling_params(config: GenerateTraceConfig, *, max_tokens: int) -> SamplingParams:
     return SamplingParams(
         n=config.num_generations,
         temperature=config.temperature,
         top_p=config.top_p,
         top_k=config.top_k,
         repetition_penalty=config.repetition_penalty,
-        max_tokens=config.max_tokens,
+        max_tokens=max_tokens,
         logprobs=config.logprobs_k,
         seed=config.seed,
         logit_bias={CONFIDENCE_TOKEN_ID: -100.0},
@@ -107,9 +106,10 @@ def make_sampling_params(config: GenerateTraceConfig) -> SamplingParams:
 
 
 class TraceShardBuilder:
-    def __init__(self, *, output_dir: Path, shard_size: int) -> None:
+    def __init__(self, *, output_dir: Path, shard_size: int, max_sequence_length: int) -> None:
         self.output_dir = output_dir
         self.shard_size = shard_size
+        self.max_sequence_length = max_sequence_length
         self.shard_index = 0
         self.row_id = 0
         self.completion_token_offset = 0
@@ -145,27 +145,51 @@ class TraceShardBuilder:
 
         token_length = int(completion_token_ids.shape[0])
         prompt_length = int(prompt_ids.shape[0])
+        total_length = prompt_length + token_length
+        if total_length > self.max_sequence_length:
+            LOGGER.warning(
+                "Skipping over-length completion for problem_id=%s sample_id=%s total_length=%s max_sequence_length=%s",
+                problem["problem_id"],
+                sample_id,
+                total_length,
+                self.max_sequence_length,
+            )
+            return
         if top_token_ids.shape[0] != token_length:
             raise ValueError(f"top_token_ids length {top_token_ids.shape[0]} != token length {token_length}")
 
         gold_answer = str(problem["gold_answer"])
+        score = score_completion(completion_text, problem)
         row = {
             "row_id": self.row_id,
             "problem_id": int(problem["problem_id"]),
             "split": split,
+            "source_dataset": str(problem["source_dataset"]),
+            "source_config": None if problem["source_config"] is None else str(problem["source_config"]),
+            "source_split": str(problem["source_split"]),
+            "source_id": str(problem["source_id"]),
+            "task_type": str(problem["task_type"]),
+            "scorer": score.scorer,
             "question": str(problem["question"]),
             "gold_answer": gold_answer,
+            "choices": list(problem["choices"]),
+            "choice_labels": list(problem["choice_labels"]),
             "prompt_text": prompt_text,
             "sample_id": sample_id,
             "completion_text": completion_text,
             "finish_reason": finish_reason,
             "stop_reason": None if stop_reason is None else str(stop_reason),
-            "math_verify_label": math_verify_label(completion_text, gold_answer),
-            "extracted_prediction": extract_prediction(completion_text),
+            "math_verify_label": score.label,
+            "verifier_label": score.label,
+            "extracted_prediction": score.extracted_prediction,
+            "normalized_prediction": score.normalized_prediction,
+            "normalized_gold": score.normalized_gold,
+            "score_error": score.score_error,
             "prompt_token_start": self.prompt_token_offset,
             "prompt_token_length": prompt_length,
             "token_start": self.completion_token_offset,
             "token_length": token_length,
+            "total_token_length": total_length,
             **dict(generation_config),
         }
         self.rows.append(row)
@@ -218,13 +242,14 @@ def build_prompts(
     tokenizer: PreTrainedTokenizerBase,
     split: str,
     problems: Sequence[Mapping[str, Any]],
+    enable_thinking: bool,
 ) -> tuple[list[str], list[np.ndarray], list[dict[str, Any]]]:
     prompt_texts: list[str] = []
     prompt_ids: list[np.ndarray] = []
     prompt_records: list[dict[str, Any]] = []
     for problem in problems:
-        messages = format_prompt(str(problem["question"]))
-        prompt_text = apply_chat_template(tokenizer, messages)
+        messages = format_prompt(str(problem["user_prompt"]), system_prompt=str(problem["system_prompt"]))
+        prompt_text = apply_chat_template(tokenizer, messages, enable_thinking=enable_thinking)
         ids = prompt_token_ids(tokenizer, prompt_text)
         prompt_texts.append(prompt_text)
         prompt_ids.append(ids)
@@ -267,7 +292,6 @@ def generate_split(
     builder: TraceShardBuilder,
     split: str,
     problems: Sequence[Mapping[str, Any]],
-    sampling_params: SamplingParams,
 ) -> None:
     generation_config = {
         "model_id": config.model_id,
@@ -276,7 +300,9 @@ def generate_split(
         "temperature": config.temperature,
         "top_p": config.top_p,
         "top_k": config.top_k,
-        "max_tokens": config.max_tokens,
+        "configured_max_tokens": config.max_tokens,
+        "max_sequence_length": config.max_sequence_length,
+        "enable_thinking": config.enable_thinking,
         "logprobs_k": config.logprobs_k,
         "forbidden_token_id": CONFIDENCE_TOKEN_ID,
     }
@@ -296,9 +322,43 @@ def generate_split(
             tokenizer=tokenizer,
             split=split,
             problems=problem_batch,
+            enable_thinking=config.enable_thinking,
         )
-        request_outputs = llm.generate(prompt_texts, sampling_params, use_tqdm=True)
-        for request_output, ids, record in zip(request_outputs, prompt_ids, prompt_records, strict=True):
+        valid_prompt_texts: list[str] = []
+        valid_prompt_ids: list[np.ndarray] = []
+        valid_prompt_records: list[dict[str, Any]] = []
+        sampling_params: list[SamplingParams] = []
+        prompt_max_tokens: list[int] = []
+        for prompt_text, ids, record in zip(prompt_texts, prompt_ids, prompt_records, strict=True):
+            prompt_length = int(ids.shape[0])
+            remaining_tokens = config.max_sequence_length - prompt_length
+            if remaining_tokens <= 0:
+                LOGGER.warning(
+                    "Skipping over-length prompt for problem_id=%s prompt_length=%s max_sequence_length=%s",
+                    record["problem"]["problem_id"],
+                    prompt_length,
+                    config.max_sequence_length,
+                )
+                continue
+
+            max_tokens = min(config.max_tokens, remaining_tokens)
+            valid_prompt_texts.append(prompt_text)
+            valid_prompt_ids.append(ids)
+            valid_prompt_records.append(record)
+            sampling_params.append(make_sampling_params(config, max_tokens=max_tokens))
+            prompt_max_tokens.append(max_tokens)
+
+        if not valid_prompt_texts:
+            continue
+
+        request_outputs = llm.generate(valid_prompt_texts, sampling_params, use_tqdm=True)
+        for request_output, ids, record, max_tokens in zip(
+            request_outputs,
+            valid_prompt_ids,
+            valid_prompt_records,
+            prompt_max_tokens,
+            strict=True,
+        ):
             outputs = sorted(request_output.outputs, key=lambda output: output.index)
             for completion in outputs:
                 completion_ids = np.asarray(completion.token_ids, dtype=np.int32)
@@ -327,7 +387,10 @@ def generate_split(
                     top_mask=top_mask,
                     finish_reason=completion.finish_reason,
                     stop_reason=completion.stop_reason,
-                    generation_config=generation_config,
+                    generation_config={
+                        **generation_config,
+                        "max_tokens": max_tokens,
+                    },
                 )
 
 
@@ -342,14 +405,10 @@ def main() -> None:
     )
     verify_confidence_token(tokenizer)
 
-    sft_split, eval_split = prepare_gsm8k_problem_splits(
-        seed=config.seed,
-        sft_problem_count=config.sft_problems,
-        eval_problem_count=config.eval_problems,
-    )
-    split_items: list[tuple[str, list[dict[str, Any]]]] = [("sft", [dict(row) for row in sft_split])]
+    sft_problems, eval_problems = prepare_problem_splits(seed=config.seed)
+    split_items: list[tuple[str, Sequence[Mapping[str, Any]]]] = [("sft", sft_problems)]
     if not config.skip_eval_generation:
-        split_items.append(("eval", [dict(row) for row in eval_split]))
+        split_items.append(("eval", eval_problems))
 
     llm = LLM(
         model=config.model_id,
@@ -358,9 +417,13 @@ def main() -> None:
         dtype=config.dtype,
         gpu_memory_utilization=config.gpu_memory_utilization,
         tensor_parallel_size=config.tensor_parallel_size,
+        max_model_len=config.max_sequence_length,
     )
-    sampling_params = make_sampling_params(config)
-    builder = TraceShardBuilder(output_dir=config.output_dir, shard_size=config.shard_size)
+    builder = TraceShardBuilder(
+        output_dir=config.output_dir,
+        shard_size=config.shard_size,
+        max_sequence_length=config.max_sequence_length,
+    )
 
     for split, problems in split_items:
         LOGGER.info("Generating %s traces for %s problems", split, len(problems))
@@ -371,7 +434,6 @@ def main() -> None:
             builder=builder,
             split=split,
             problems=problems,
-            sampling_params=sampling_params,
         )
 
     builder.flush()
@@ -380,16 +442,19 @@ def main() -> None:
         TraceManifest(
             model_id=config.model_id,
             tokenizer_id=tokenizer_id,
-            dataset="openai/gsm8k",
-            dataset_config="main",
+            dataset="mixed",
+            dataset_config="multi",
             seed=config.seed,
-            sft_problem_count=config.sft_problems,
-            eval_problem_count=0 if config.skip_eval_generation else config.eval_problems,
+            sft_problem_count=len(sft_problems),
+            eval_problem_count=0 if config.skip_eval_generation else len(eval_problems),
             num_generations=config.num_generations,
             max_tokens=config.max_tokens,
+            max_sequence_length=config.max_sequence_length,
+            enable_thinking=config.enable_thinking,
             logprobs_k=config.logprobs_k,
             forbidden_token_id=CONFIDENCE_TOKEN_ID,
             shards=builder.shards,
+            datasets=dataset_manifest_entries(),
         ),
     )
 
