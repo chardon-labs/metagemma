@@ -18,9 +18,10 @@ from transformers import PreTrainedTokenizerBase
 
 LOGGER = logging.getLogger(__name__)
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_MODEL_ID = "google/gemma-3-1b-it"
-DEFAULT_OUTPUT_DIR = "outputs/gemma-3-1b-it-confidence"
-DEFAULT_TRACE_DIR = "traces/gemma-3-1b-it-gsm8k-confidence"
+DEFAULT_OUTPUT_DIR = str(REPO_ROOT / "outputs/gemma-3-1b-it-confidence")
+DEFAULT_TRACE_DIR = str(REPO_ROOT / "traces/gemma-3-1b-it-gsm8k-confidence")
 UNUSED0_TOKEN = "<unused0>"
 UNUSED0_TOKEN_ID = 6
 SYSTEM_PROMPT = (
