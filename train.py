@@ -11,7 +11,7 @@ from datasets import Dataset, load_dataset
 from math_verify import parse, verify
 
 
-MODEL_ID = "Qwen/Qwen3-0.5B"
+MODEL_ID = "Qwen/Qwen3-0.6B"
 OUTPUT_DIR = "outputs/qwen3-0.5b-gsm8k-grpo"
 MAX_TRAIN_SAMPLES = 2048
 MAX_EVAL_SAMPLES = 128
@@ -168,7 +168,7 @@ def log_wandb_leet_hint() -> None:
         return
 
     LOGGER.info(
-        "Monitor this run in a separate terminal with: uv run wandb beta leet"
+        "Monitor this run in a separate terminal with: uv run wandb beta leet run"
     )
 
 

@@ -57,15 +57,15 @@ WANDB_DISABLED=true uv run python train.py
 For a terminal UI, run W&B LEET from the same working directory in another SSH/tmux pane:
 
 ```bash
-uv run wandb beta leet
+uv run wandb beta leet run
 ```
 
 LEET reads `./wandb/latest-run/` by default and updates from the local `.wandb` file while
 training is running. You can also point it at a specific run directory or transaction log:
 
 ```bash
-uv run wandb beta leet ./wandb/run-20250813_124246-n67z9ude
-uv run wandb beta leet ./wandb/run-20250813_124246-n67z9ude/run-n67z9ude.wandb
+uv run wandb beta leet run ./wandb/run-20250813_124246-n67z9ude
+uv run wandb beta leet run ./wandb/run-20250813_124246-n67z9ude/run-n67z9ude.wandb
 ```
 
 The training script disables tqdm by default (`DISABLE_TQDM = True`) so LEET is the main
