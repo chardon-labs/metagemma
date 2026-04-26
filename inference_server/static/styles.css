@@ -80,6 +80,40 @@ body {
   font-size: 13px;
 }
 
+.model-name {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.loss-formula {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.formula-label {
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.math-formula {
+  color: var(--ink);
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.math-formula mjx-container {
+  margin: 0;
+  min-width: max-content;
+  text-align: left;
+}
+
 .results {
   display: grid;
   grid-template-rows: auto minmax(180px, 300px) minmax(0, 1fr);

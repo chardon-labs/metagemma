@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -20,7 +21,9 @@ from confidence_trace import (
     configure_logging,
     fixed_top_logprobs,
     format_prompt,
+    load_manifest,
     prompt_token_ids,
+    read_trace_metadata,
     verify_confidence_token,
     write_manifest,
     write_trace_shard,
@@ -49,11 +52,13 @@ TOP_K = 20
 REPETITION_PENALTY = 1.0
 GPU_MEMORY_UTILIZATION = 0.85
 ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
+ProblemKey = tuple[str, str, str, str, str, str]
 DTYPE: ModelDType = "auto"
 TENSOR_PARALLEL_SIZE = 1
 MAX_PROMPTS_PER_GENERATE: int | None = None
 SHARD_SIZE = 512
 SKIP_EVAL_GENERATION = False
+APPEND = False
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,7 @@ class GenerateTraceConfig:
     max_prompts_per_generate: int | None = MAX_PROMPTS_PER_GENERATE
     shard_size: int = SHARD_SIZE
     skip_eval_generation: bool = SKIP_EVAL_GENERATION
+    append: bool = APPEND
 
 
 def prompt_batches(
@@ -114,12 +120,20 @@ def make_sampling_params(config: GenerateTraceConfig, *, max_tokens: int) -> Sam
 
 
 class TraceShardBuilder:
-    def __init__(self, *, output_dir: Path, shard_size: int, max_sequence_length: int) -> None:
+    def __init__(
+        self,
+        *,
+        output_dir: Path,
+        shard_size: int,
+        max_sequence_length: int,
+        initial_shard_index: int = 0,
+        initial_row_id: int = 0,
+    ) -> None:
         self.output_dir = output_dir
         self.shard_size = shard_size
         self.max_sequence_length = max_sequence_length
-        self.shard_index = 0
-        self.row_id = 0
+        self.shard_index = initial_shard_index
+        self.row_id = initial_row_id
         self.completion_token_offset = 0
         self.prompt_token_offset = 0
         self.rows: list[dict[str, Any]] = []
@@ -444,9 +458,108 @@ def split_sft_thinking_groups(
     return thinking_problems, no_thinking_problems
 
 
+def parse_config() -> GenerateTraceConfig:
+    parser = argparse.ArgumentParser(description="Generate confidence trace shards.")
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append only new dataset problems to the existing output snapshot.",
+    )
+    args = parser.parse_args()
+    return GenerateTraceConfig(append=bool(args.append))
+
+
+def problem_key(split: str, problem: Mapping[str, Any]) -> ProblemKey:
+    source_config = "" if problem["source_config"] is None else str(problem["source_config"])
+    return (
+        split,
+        str(problem["source_dataset"]),
+        source_config,
+        str(problem["source_split"]),
+        str(problem["source_id"]),
+        str(problem["task_type"]),
+    )
+
+
+def row_problem_key(row: Mapping[str, Any]) -> ProblemKey:
+    source_config = "" if row["source_config"] is None else str(row["source_config"])
+    return (
+        str(row["split"]),
+        str(row["source_dataset"]),
+        source_config,
+        str(row["source_split"]),
+        str(row["source_id"]),
+        str(row["task_type"]),
+    )
+
+
+def next_shard_index(shards: Sequence[Mapping[str, str]]) -> int:
+    highest = -1
+    for shard in shards:
+        stem = Path(shard["meta_path"]).name.split(".", maxsplit=1)[0]
+        prefix, _, suffix = stem.rpartition("-")
+        if prefix == "trace" and suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest + 1
+
+
+@dataclass(frozen=True)
+class AppendState:
+    manifest: TraceManifest
+    existing_problem_keys: set[ProblemKey]
+    next_row_id: int
+    next_problem_id: int
+    next_shard_index: int
+
+
+def load_append_state(output_dir: Path) -> AppendState:
+    manifest_path = output_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"--append requires an existing manifest at {manifest_path}")
+
+    manifest = load_manifest(output_dir)
+    existing_problem_keys: set[ProblemKey] = set()
+    max_row_id = -1
+    max_problem_id = -1
+    for shard in manifest.shards:
+        for row in read_trace_metadata(output_dir / shard["meta_path"]):
+            existing_problem_keys.add(row_problem_key(row))
+            max_row_id = max(max_row_id, int(row["row_id"]))
+            max_problem_id = max(max_problem_id, int(row["problem_id"]))
+
+    return AppendState(
+        manifest=manifest,
+        existing_problem_keys=existing_problem_keys,
+        next_row_id=max_row_id + 1,
+        next_problem_id=max_problem_id + 1,
+        next_shard_index=next_shard_index(manifest.shards),
+    )
+
+
+def filter_append_problems(
+    *,
+    split: str,
+    problems: Sequence[Mapping[str, Any]],
+    existing_problem_keys: set[ProblemKey],
+    first_problem_id: int,
+) -> tuple[list[Mapping[str, Any]], int]:
+    next_problem_id = first_problem_id
+    new_problems: list[Mapping[str, Any]] = []
+    for problem in problems:
+        key = problem_key(split, problem)
+        if key in existing_problem_keys:
+            continue
+        appended_problem = dict(problem)
+        appended_problem["problem_id"] = next_problem_id
+        next_problem_id += 1
+        existing_problem_keys.add(key)
+        new_problems.append(appended_problem)
+    return new_problems, next_problem_id
+
+
 def main() -> None:
     configure_logging()
-    config = GenerateTraceConfig()
+    config = parse_config()
     config.output_dir.mkdir(parents=True, exist_ok=True)
     tokenizer_id = config.tokenizer_id or config.model_id
     tokenizer = cast(
@@ -456,6 +569,40 @@ def main() -> None:
     verify_confidence_token(tokenizer)
 
     sft_problems, eval_problems = prepare_problem_splits(seed=config.seed)
+    existing_shards: list[dict[str, str]] = []
+    initial_row_id = 0
+    initial_shard_index = 0
+    previous_sft_problem_count = 0
+    previous_eval_problem_count = 0
+    if config.append:
+        append_state = load_append_state(config.output_dir)
+        previous_sft_problem_count = append_state.manifest.sft_problem_count
+        previous_eval_problem_count = append_state.manifest.eval_problem_count
+        existing_shards = append_state.manifest.shards
+        initial_row_id = append_state.next_row_id
+        initial_shard_index = append_state.next_shard_index
+        sft_problems, next_problem_id = filter_append_problems(
+            split="sft",
+            problems=sft_problems,
+            existing_problem_keys=append_state.existing_problem_keys,
+            first_problem_id=append_state.next_problem_id,
+        )
+        eval_problems, _ = filter_append_problems(
+            split="eval",
+            problems=eval_problems,
+            existing_problem_keys=append_state.existing_problem_keys,
+            first_problem_id=next_problem_id,
+        )
+        LOGGER.info(
+            "Append mode found %s new sft problems and %s new eval problems",
+            len(sft_problems),
+            0 if config.skip_eval_generation else len(eval_problems),
+        )
+
+    if not sft_problems and (config.skip_eval_generation or not eval_problems):
+        LOGGER.info("No new problems to append.")
+        return
+
     sft_thinking_problems, sft_no_thinking_problems = split_sft_thinking_groups(sft_problems)
     split_items: list[tuple[str, Sequence[Mapping[str, Any]], bool]] = [
         ("sft", sft_thinking_problems, True),
@@ -477,6 +624,8 @@ def main() -> None:
         output_dir=config.output_dir,
         shard_size=config.shard_size,
         max_sequence_length=config.max_sequence_length,
+        initial_shard_index=initial_shard_index,
+        initial_row_id=initial_row_id,
     )
 
     for split, problems, enable_thinking in split_items:
@@ -505,15 +654,16 @@ def main() -> None:
             dataset="mixed",
             dataset_config="multi",
             seed=config.seed,
-            sft_problem_count=len(sft_problems),
-            eval_problem_count=0 if config.skip_eval_generation else len(eval_problems),
+            sft_problem_count=previous_sft_problem_count + len(sft_problems),
+            eval_problem_count=previous_eval_problem_count
+            + (0 if config.skip_eval_generation else len(eval_problems)),
             num_generations=config.num_generations,
             max_tokens=config.max_tokens,
             max_sequence_length=config.max_sequence_length,
             enable_thinking=None,
             logprobs_k=config.logprobs_k,
             forbidden_token_id=CONFIDENCE_TOKEN_ID,
-            shards=builder.shards,
+            shards=[*existing_shards, *builder.shards],
             datasets=dataset_manifest_entries(),
         ),
     )

@@ -102,9 +102,23 @@
           <p>Confidence-guided trace selection</p>
         </header>
         <p>
-          We train the model to emit a calibrated confidence signal alongside each generated token, then expose that
-          signal during decoding without changing the language modeling objective.
+          <strong class="model-name">Gemma 4 E2B</strong> was fine tuned to emit a confidence score alongside each
+          generated token by replacing an unused token, without changing the model architecture.
         </p>
+        <div class="loss-formula" aria-label="Training loss">
+          <span class="formula-label">Loss</span>
+          <div class="math-formula">
+            \[
+              \begin{aligned}
+              \mathcal{L}
+                &= \lambda_1 D(q_{\mathrm{teacher}}, p_{\theta})
+                + \lambda_2 H(y, \hat{c}_t) \\
+              \hat{c}_t
+                &= \sigma(h_t \cdot w_{\mathrm{conf}})
+              \end{aligned}
+            \]
+          </div>
+        </div>
         <p>
           This maps directly onto inference engines: each sampled trace is just a batch row, while confidence is an
           auxiliary logit read at every step.
@@ -114,10 +128,21 @@
           reads across many candidate traces. This enables policies such as selecting the trace with the highest average
           confidence.
         </p>
+        <p>
+          Sample applications include routing low-confidence generations for review, comparing candidate traces, and
+          visualizing uncertainty across long answers.
+        </p>
       </section>
     </main>
 
     <script src="/static/vendor/uPlot.iife.min.js"></script>
+    <script>
+      window.MathJax = {
+        tex: { inlineMath: [["\\(", "\\)"]], displayMath: [["\\[", "\\]"]] },
+        svg: { fontCache: "global" },
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
     <script src="/static/app.js"></script>
   </body>
 </html>

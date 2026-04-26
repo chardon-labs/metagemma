@@ -22,6 +22,9 @@ FACT_CHECK_SYSTEM_PROMPT = (
     "Classify the claim as SUPPORTS, REFUTES, or NOT ENOUGH INFO. Think through the claim, then "
     "give the final answer in the format: #### <label>"
 )
+CATEGORICAL_SYSTEM_PROMPT = (
+    "Solve the task. Think through the problem, then give the final answer in the format: #### <label>"
+)
 
 
 class Problem(TypedDict):
@@ -41,7 +44,7 @@ class Problem(TypedDict):
 
 
 Loader = Callable[["DatasetSpec", int], tuple[list[Problem], list[Problem]]]
-TaskType = Literal["math", "multiple_choice", "fact_check"]
+TaskType = Literal["math", "multiple_choice", "fact_check", "categorical"]
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,21 @@ DATASET_SAMPLE_COUNTS = {
     "mmlu_pro": DEFAULT_DATASET_SAMPLE_COUNTS,
     "arc_challenge": DEFAULT_DATASET_SAMPLE_COUNTS,
     "truthfulqa_mc1": DEFAULT_DATASET_SAMPLE_COUNTS,
+    "gpqa_diamond": DatasetSampleCounts(sft_count=160, eval_count=38),
+    "bbh_boolean_expressions": DatasetSampleCounts(sft_count=200, eval_count=50),
+    "bbh_causal_judgement": DatasetSampleCounts(sft_count=150, eval_count=37),
+    "bbh_navigate": DatasetSampleCounts(sft_count=200, eval_count=50),
+    "bbh_sports_understanding": DatasetSampleCounts(sft_count=200, eval_count=50),
+    "bbh_web_of_lies": DatasetSampleCounts(sft_count=200, eval_count=50),
     "fever": DEFAULT_DATASET_SAMPLE_COUNTS,
+}
+
+BBH_LABELS_BY_CONFIG = {
+    "boolean_expressions": ["True", "False"],
+    "causal_judgement": ["Yes", "No"],
+    "navigate": ["Yes", "No"],
+    "sports_understanding": ["Yes", "No"],
+    "web_of_lies": ["Yes", "No"],
 }
 
 
@@ -101,6 +118,11 @@ def _split_single_dataset(dataset: Dataset, *, seed: int, sft_count: int, eval_c
 def _choice_prompt(question: str, labels: Sequence[str], choices: Sequence[str]) -> str:
     rendered_choices = "\n".join(f"{label}. {choice}" for label, choice in zip(labels, choices, strict=True))
     return f"Question:\n{question}\n\nOptions:\n{rendered_choices}"
+
+
+def _label_prompt(question: str, labels: Sequence[str]) -> str:
+    rendered_labels = ", ".join(labels)
+    return f"Task:\n{question}\n\nValid labels: {rendered_labels}"
 
 
 def _problem(
@@ -320,6 +342,91 @@ def load_truthfulqa_mc1(spec: DatasetSpec, seed: int) -> tuple[list[Problem], li
     )
 
 
+def load_gpqa_diamond(spec: DatasetSpec, seed: int) -> tuple[list[Problem], list[Problem]]:
+    dataset = _load_split(spec.dataset_id, spec.dataset_config, spec.sft_split)
+    sft_split, eval_split = _split_single_dataset(
+        dataset,
+        seed=seed,
+        sft_count=spec.sft_count,
+        eval_count=spec.eval_count,
+    )
+
+    def convert(row: Mapping[str, Any], split: str, index: int) -> Problem:
+        unshuffled_choices = [
+            str(row["Correct Answer"]).strip(),
+            str(row["Incorrect Answer 1"]).strip(),
+            str(row["Incorrect Answer 2"]).strip(),
+            str(row["Incorrect Answer 3"]).strip(),
+        ]
+        permutation = list(range(len(unshuffled_choices)))
+        random.Random(f"{seed}:{split}:{index}").shuffle(permutation)
+        choices = [unshuffled_choices[choice_index] for choice_index in permutation]
+        labels = list(LETTERS[: len(choices)])
+        correct_index = permutation.index(0)
+        question = str(row["Question"]).strip()
+        return _problem(
+            source_dataset=spec.dataset_id,
+            source_config=spec.dataset_config,
+            source_split=split,
+            source_id=str(row["Record ID"]),
+            task_type=spec.task_type,
+            scorer=spec.scorer,
+            system_prompt=MCQ_SYSTEM_PROMPT,
+            user_prompt=_choice_prompt(question, labels, choices),
+            question=question,
+            gold_answer=labels[correct_index],
+            choices=choices,
+            choice_labels=labels,
+        )
+
+    return (
+        [convert(cast(Mapping[str, Any], row), spec.sft_split, index) for index, row in enumerate(sft_split)],
+        [
+            convert(cast(Mapping[str, Any], row), f"{spec.sft_split}:eval", index)
+            for index, row in enumerate(eval_split)
+        ],
+    )
+
+
+def load_bbh_label(spec: DatasetSpec, seed: int) -> tuple[list[Problem], list[Problem]]:
+    if spec.dataset_config is None:
+        raise ValueError("BBH label specs require a dataset_config.")
+    labels = BBH_LABELS_BY_CONFIG[spec.dataset_config]
+    dataset = _load_split(spec.dataset_id, spec.dataset_config, spec.sft_split)
+    sft_split, eval_split = _split_single_dataset(
+        dataset,
+        seed=seed,
+        sft_count=spec.sft_count,
+        eval_count=spec.eval_count,
+    )
+
+    def convert(row: Mapping[str, Any], split: str, index: int) -> Problem:
+        question = str(row["input"]).strip()
+        gold_answer = str(row["target"]).strip()
+        return _problem(
+            source_dataset=spec.dataset_id,
+            source_config=spec.dataset_config,
+            source_split=split,
+            source_id=f"{split}:{index}",
+            task_type=spec.task_type,
+            scorer=spec.scorer,
+            system_prompt=CATEGORICAL_SYSTEM_PROMPT,
+            user_prompt=_label_prompt(question, labels),
+            question=question,
+            gold_answer=gold_answer,
+            choices=labels,
+            choice_labels=labels,
+        )
+
+    return (
+        [convert(cast(Mapping[str, Any], row), spec.sft_split, index) for index, row in enumerate(sft_split)],
+        [
+            convert(cast(Mapping[str, Any], row), f"{spec.sft_split}:eval", index)
+            for index, row in enumerate(eval_split)
+        ],
+    )
+
+
 def load_fever(spec: DatasetSpec, seed: int) -> tuple[list[Problem], list[Problem]]:
     sft_dataset = _select_shuffled(
         _load_split(spec.dataset_id, spec.dataset_config, spec.sft_split),
@@ -415,6 +522,78 @@ DATASET_SPECS = [
         loader=load_truthfulqa_mc1,
         sft_split="validation",
         eval_split="validation",
+    ),
+    DatasetSpec(
+        name="gpqa_diamond",
+        dataset_id="JingzeShi/gpqa_diamond",
+        dataset_config=None,
+        task_type="multiple_choice",
+        scorer="multiple_choice_exact",
+        sft_count=_sample_counts("gpqa_diamond").sft_count,
+        eval_count=_sample_counts("gpqa_diamond").eval_count,
+        loader=load_gpqa_diamond,
+        sft_split="train",
+        eval_split="train",
+    ),
+    DatasetSpec(
+        name="bbh_boolean_expressions",
+        dataset_id="lukaemon/bbh",
+        dataset_config="boolean_expressions",
+        task_type="categorical",
+        scorer="label_exact",
+        sft_count=_sample_counts("bbh_boolean_expressions").sft_count,
+        eval_count=_sample_counts("bbh_boolean_expressions").eval_count,
+        loader=load_bbh_label,
+        sft_split="test",
+        eval_split="test",
+    ),
+    DatasetSpec(
+        name="bbh_causal_judgement",
+        dataset_id="lukaemon/bbh",
+        dataset_config="causal_judgement",
+        task_type="categorical",
+        scorer="label_exact",
+        sft_count=_sample_counts("bbh_causal_judgement").sft_count,
+        eval_count=_sample_counts("bbh_causal_judgement").eval_count,
+        loader=load_bbh_label,
+        sft_split="test",
+        eval_split="test",
+    ),
+    DatasetSpec(
+        name="bbh_navigate",
+        dataset_id="lukaemon/bbh",
+        dataset_config="navigate",
+        task_type="categorical",
+        scorer="label_exact",
+        sft_count=_sample_counts("bbh_navigate").sft_count,
+        eval_count=_sample_counts("bbh_navigate").eval_count,
+        loader=load_bbh_label,
+        sft_split="test",
+        eval_split="test",
+    ),
+    DatasetSpec(
+        name="bbh_sports_understanding",
+        dataset_id="lukaemon/bbh",
+        dataset_config="sports_understanding",
+        task_type="categorical",
+        scorer="label_exact",
+        sft_count=_sample_counts("bbh_sports_understanding").sft_count,
+        eval_count=_sample_counts("bbh_sports_understanding").eval_count,
+        loader=load_bbh_label,
+        sft_split="test",
+        eval_split="test",
+    ),
+    DatasetSpec(
+        name="bbh_web_of_lies",
+        dataset_id="lukaemon/bbh",
+        dataset_config="web_of_lies",
+        task_type="categorical",
+        scorer="label_exact",
+        sft_count=_sample_counts("bbh_web_of_lies").sft_count,
+        eval_count=_sample_counts("bbh_web_of_lies").eval_count,
+        loader=load_bbh_label,
+        sft_split="test",
+        eval_split="test",
     ),
     DatasetSpec(
         name="fever",
