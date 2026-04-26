@@ -1,13 +1,15 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f9;
+  --bg: #f4f6f8;
   --panel: #ffffff;
   --ink: #17202a;
   --muted: #697386;
   --line: #d8dee8;
+  --line-strong: #c7d0dc;
   --accent: #1f7a8c;
   --accent-strong: #13505b;
   --warn: #a23b2a;
+  --soft: #eef3f5;
 }
 
 * {
@@ -23,17 +25,19 @@ body {
 
 .shell {
   display: grid;
-  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: minmax(280px, 340px) minmax(520px, 1fr) minmax(260px, 320px);
+  gap: 16px;
   min-height: 100vh;
-  padding: 20px;
+  padding: 16px;
 }
 
 .controls,
-.results {
+.results,
+.methodology {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
+  box-shadow: 0 1px 2px rgb(23 32 42 / 0.04);
 }
 
 .controls {
@@ -41,6 +45,39 @@ body {
   flex-direction: column;
   gap: 16px;
   padding: 18px;
+}
+
+.panel-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.panel-header p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.methodology {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+
+.methodology p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .results {
@@ -80,12 +117,12 @@ textarea {
 
 textarea {
   resize: vertical;
-  min-height: 120px;
+  min-height: 170px;
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 10px;
 }
 
@@ -133,8 +170,9 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 14px 16px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #fff, var(--soft));
 }
 
 .status {
@@ -171,14 +209,20 @@ button:disabled {
   font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+@media (max-width: 1180px) {
+  .shell {
+    grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  }
+
+  .methodology {
+    grid-column: 1 / -1;
+  }
+}
+
 @media (max-width: 820px) {
   .shell {
     grid-template-columns: 1fr;
     padding: 12px;
-  }
-
-  .grid {
-    grid-template-columns: 1fr;
   }
 
   .statusbar {

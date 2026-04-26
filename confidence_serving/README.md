@@ -39,8 +39,33 @@ curl -s http://127.0.0.1:8010/complete \
     "max_new_tokens": 32,
     "temperature": 0,
     "top_p": 1,
-    "enable_thinking": false
+    "enable_thinking": false,
+    "n": 1
   }'
+```
+
+Set `n` greater than `1` to sample multiple completions from the same rendered prompt in one model batch. The response keeps the original top-level single-completion fields for compatibility and also includes all samples:
+
+```json
+{
+  "completion": "...",
+  "confidence": 0.91,
+  "token_confidences": [0.82, 0.91],
+  "token_ids": [123, 456],
+  "confidence_summary": {"final": 0.91, "mean": 0.865, "tail10_mean": 0.865},
+  "finish_reason": "stop",
+  "completions": [
+    {
+      "index": 0,
+      "completion": "...",
+      "confidence": 0.91,
+      "token_confidences": [0.82, 0.91],
+      "token_ids": [123, 456],
+      "confidence_summary": {"final": 0.91, "mean": 0.865, "tail10_mean": 0.865},
+      "finish_reason": "stop"
+    }
+  ]
+}
 ```
 
 Streaming endpoint:
@@ -52,14 +77,16 @@ POST /complete/stream
 It returns newline-delimited JSON. Token events arrive as:
 
 ```json
-{"type":"token","token_id":123,"text":" answer","confidence":0.82}
+{"type":"token","index":0,"token_id":123,"text":" answer","confidence":0.82}
 ```
 
-The last event is:
+Each completion emits a final event:
 
 ```json
-{"type":"final","completion":"...","confidence":0.91,"token_confidences":[0.82,0.91],"token_ids":[123,456],"confidence_summary":{"final":0.91,"mean":0.865,"tail10_mean":0.865},"finish_reason":"stop"}
+{"type":"final","index":0,"completion":"...","confidence":0.91,"token_confidences":[0.82,0.91],"token_ids":[123,456],"confidence_summary":{"final":0.91,"mean":0.865,"tail10_mean":0.865},"finish_reason":"stop"}
 ```
+
+The stream ends with `{"type":"batch_final","completions":[...]}`.
 
 ## Frontend
 

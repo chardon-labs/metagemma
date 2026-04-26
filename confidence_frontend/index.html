@@ -9,6 +9,11 @@
   <body>
     <main class="shell">
       <section class="controls" aria-label="Request controls">
+        <header class="panel-header">
+          <h1>Request</h1>
+          <p>Sample 16 traces from one prompt.</p>
+        </header>
+
         <div class="field">
           <label for="endpoint">Endpoint</label>
           <input id="endpoint" value="http://127.0.0.1:8010/complete/stream" />
@@ -62,6 +67,26 @@
 
         <canvas id="chart" width="960" height="260" aria-label="Confidence chart"></canvas>
         <pre id="completion" class="completion"></pre>
+      </section>
+
+      <section class="methodology" aria-label="Methodology">
+        <header class="panel-header">
+          <h1>Methodology</h1>
+          <p>Confidence-guided trace selection</p>
+        </header>
+        <p>
+          We train the model to emit a calibrated confidence signal alongside each generated token, then expose that
+          signal during decoding without changing the language modeling objective.
+        </p>
+        <p>
+          This maps directly onto inference engines: each sampled trace is just a batch row, while confidence is an
+          auxiliary logit read at every step.
+        </p>
+        <p>
+          For local models, where inference is often constrained by memory bandwidth, larger batches can amortize weight
+          reads across many candidate traces. This enables policies such as selecting the trace with the highest average
+          confidence.
+        </p>
       </section>
     </main>
 

@@ -13,9 +13,29 @@ const meanConfidence = document.querySelector("#meanConfidence");
 const completion = document.querySelector("#completion");
 const chart = document.querySelector("#chart");
 const ctx = chart.getContext("2d");
+const traceCount = 16;
+const traceColors = [
+  "#1f7a8c",
+  "#b7410e",
+  "#3d5a80",
+  "#6a994e",
+  "#8f2d56",
+  "#bc6c25",
+  "#4361ee",
+  "#2a9d8f",
+  "#7b2cbf",
+  "#d62828",
+  "#457b9d",
+  "#5f0f40",
+  "#588157",
+  "#e76f51",
+  "#264653",
+  "#9a031e",
+];
 
 let controller = null;
-let confidences = [];
+let traces = [];
+let finalResults = [];
 
 function setStatus(text, isError = false) {
   statusText.textContent = text;
@@ -27,12 +47,22 @@ function formatConfidence(value) {
 }
 
 function resetView() {
-  confidences = [];
+  traces = Array.from({ length: traceCount }, () => []);
+  finalResults = [];
   completion.textContent = "";
-  tokenCount.textContent = "0 tokens";
+  tokenCount.textContent = `0 tokens across ${traceCount} traces`;
   finalConfidence.textContent = "-";
   meanConfidence.textContent = "-";
   drawChart();
+}
+
+function meanConfidenceFor(values) {
+  if (values.length === 0) return null;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function allConfidences() {
+  return traces.flat();
 }
 
 function resizeCanvas() {
@@ -83,48 +113,69 @@ function drawChart() {
   ctx.lineTo(width - padding.right, height - padding.bottom);
   ctx.stroke();
 
-  if (confidences.length === 0) {
+  const visibleTraces = traces.filter((values) => values.length > 0);
+  if (visibleTraces.length === 0) {
     ctx.fillStyle = "#697386";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("Waiting for streamed tokens", width / 2, height / 2);
+    ctx.fillText(`Waiting for ${traceCount} streamed traces`, width / 2, height / 2);
     return;
   }
 
-  const xFor = (index) => {
-    if (confidences.length === 1) return padding.left;
-    return padding.left + (plotWidth * index) / (confidences.length - 1);
-  };
   const yFor = (value) => padding.top + plotHeight * (1 - value);
+  const maxLength = Math.max(...visibleTraces.map((values) => values.length));
+  const xFor = (index) => {
+    if (maxLength === 1) return padding.left;
+    return padding.left + (plotWidth * index) / (maxLength - 1);
+  };
 
-  ctx.strokeStyle = "#1f7a8c";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  confidences.forEach((value, index) => {
-    const x = xFor(index);
-    const y = yFor(value);
-    if (index === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
-
-  ctx.fillStyle = "#13505b";
-  confidences.forEach((value, index) => {
-    const x = xFor(index);
-    const y = yFor(value);
+  traces.forEach((values, traceIndex) => {
+    if (values.length === 0) return;
+    ctx.strokeStyle = traceColors[traceIndex % traceColors.length];
+    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.78;
     ctx.beginPath();
-    ctx.arc(x, y, 2.5, 0, Math.PI * 2);
-    ctx.fill();
+    values.forEach((value, tokenIndex) => {
+      const x = xFor(tokenIndex);
+      const y = yFor(value);
+      if (tokenIndex === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
   });
+  ctx.globalAlpha = 1;
 }
 
 function updateStats(finalValue = null, meanValue = null) {
-  tokenCount.textContent = `${confidences.length} token${confidences.length === 1 ? "" : "s"}`;
-  if (confidences.length > 0) {
-    finalConfidence.textContent = formatConfidence(finalValue ?? confidences[confidences.length - 1]);
-    const mean = meanValue ?? confidences.reduce((sum, value) => sum + value, 0) / confidences.length;
+  const values = allConfidences();
+  tokenCount.textContent = `${values.length} tokens across ${traceCount} traces`;
+  if (values.length > 0) {
+    finalConfidence.textContent = formatConfidence(finalValue ?? values[values.length - 1]);
+    const mean = meanValue ?? meanConfidenceFor(values);
     meanConfidence.textContent = formatConfidence(mean);
   }
+}
+
+function resultMean(result) {
+  const summaryMean = result.confidence_summary?.mean;
+  if (summaryMean !== null && summaryMean !== undefined) return summaryMean;
+  return meanConfidenceFor(result.token_confidences) ?? -Infinity;
+}
+
+function renderSelectedOutputs() {
+  const completed = finalResults.filter((result) => result !== undefined);
+  if (completed.length === 0) return;
+
+  const ranked = [...completed].sort((left, right) => resultMean(right) - resultMean(left));
+  const highest = ranked[0];
+  const lowest = ranked[ranked.length - 1];
+  completion.textContent = [
+    `Highest average confidence: trace ${highest.index} (mean ${formatConfidence(resultMean(highest))})`,
+    highest.completion || "[empty completion]",
+    "",
+    `Lowest average confidence: trace ${lowest.index} (mean ${formatConfidence(resultMean(lowest))})`,
+    lowest.completion || "[empty completion]",
+  ].join("\n");
 }
 
 async function runStream() {
@@ -140,6 +191,7 @@ async function runStream() {
     temperature: Number(temperature.value),
     top_p: Number(topP.value),
     enable_thinking: thinking.checked,
+    n: traceCount,
   };
 
   try {
@@ -168,23 +220,31 @@ async function runStream() {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
         if (event.type === "token") {
-          completion.textContent += event.text;
-          confidences.push(event.confidence);
+          if (!traces[event.index]) traces[event.index] = [];
+          traces[event.index].push(event.confidence);
           updateStats();
           drawChart();
         } else if (event.type === "final") {
-          completion.textContent = event.completion;
-          confidences = event.token_confidences;
-          updateStats(event.confidence, event.confidence_summary.mean);
+          if (!traces[event.index]) traces[event.index] = [];
+          finalResults[event.index] = event;
+          traces[event.index] = event.token_confidences;
+          updateStats();
+          renderSelectedOutputs();
           drawChart();
-          setStatus(`Done: ${event.finish_reason}`);
+        } else if (event.type === "batch_final") {
+          finalResults = event.completions;
+          traces = event.completions.map((result) => result.token_confidences);
+          updateStats();
+          renderSelectedOutputs();
+          drawChart();
+          setStatus(`Done: ${event.completions.length} traces`);
         }
       }
     }
 
     if (buffer.trim()) {
       const event = JSON.parse(buffer);
-      if (event.type === "final") setStatus(`Done: ${event.finish_reason}`);
+      if (event.type === "batch_final") setStatus(`Done: ${event.completions.length} traces`);
     }
   } catch (error) {
     if (error.name === "AbortError") {

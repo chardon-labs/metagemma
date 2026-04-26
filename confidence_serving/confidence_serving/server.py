@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import json
 from contextlib import asynccontextmanager
-from threading import Lock
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from typing import Literal, cast
 
 import uvicorn
@@ -15,12 +15,14 @@ from pydantic import BaseModel, Field
 
 from confidence_serving.generate import (
     ChatMessage,
+    GenerateBatchResult,
     GenerateRequest,
     GenerateResult,
+    StreamBatchFinalEvent,
     StreamFinalEvent,
     StreamTokenEvent,
-    generate_confidence_stream,
-    generate_with_confidence,
+    async_generate_batch_with_confidence,
+    async_generate_confidence_stream,
 )
 from confidence_serving.model_loader import LoadedConfidenceModel, load_confidence_model
 from confidence_serving.settings import HOST, MAX_NEW_TOKENS, PORT, REPETITION_PENALTY, TEMPERATURE, TOP_P
@@ -30,7 +32,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 LOGGER = logging.getLogger(__name__)
 
 MODEL: LoadedConfidenceModel | None = None
-MODEL_LOCK = Lock()
+MODEL_LOCK = asyncio.Lock()
 
 
 class ChatMessagePayload(BaseModel):
@@ -45,12 +47,23 @@ class CompletionRequestPayload(BaseModel):
     top_p: float = Field(default=TOP_P, gt=0.0, le=1.0)
     repetition_penalty: float = Field(default=REPETITION_PENALTY, gt=0.0)
     enable_thinking: bool = True
+    n: int = Field(default=1, gt=0)
 
 
 class ConfidenceSummaryPayload(BaseModel):
     final: float | None
     mean: float | None
     tail10_mean: float | None
+
+
+class CompletionChoicePayload(BaseModel):
+    index: int
+    completion: str
+    confidence: float | None
+    token_confidences: list[float]
+    token_ids: list[int]
+    confidence_summary: ConfidenceSummaryPayload
+    finish_reason: str
 
 
 class CompletionResponsePayload(BaseModel):
@@ -60,10 +73,12 @@ class CompletionResponsePayload(BaseModel):
     token_ids: list[int]
     confidence_summary: ConfidenceSummaryPayload
     finish_reason: str
+    completions: list[CompletionChoicePayload]
 
 
 class StreamTokenPayload(BaseModel):
     type: Literal["token"] = "token"
+    index: int
     token_id: int
     text: str
     confidence: float
@@ -71,12 +86,18 @@ class StreamTokenPayload(BaseModel):
 
 class StreamFinalPayload(BaseModel):
     type: Literal["final"] = "final"
+    index: int
     completion: str
     confidence: float | None
     token_confidences: list[float]
     token_ids: list[int]
     confidence_summary: ConfidenceSummaryPayload
     finish_reason: str
+
+
+class StreamBatchFinalPayload(BaseModel):
+    type: Literal["batch_final"] = "batch_final"
+    completions: list[CompletionChoicePayload]
 
 
 def _to_generate_request(payload: CompletionRequestPayload) -> GenerateRequest:
@@ -87,11 +108,13 @@ def _to_generate_request(payload: CompletionRequestPayload) -> GenerateRequest:
         top_p=payload.top_p,
         repetition_penalty=payload.repetition_penalty,
         enable_thinking=payload.enable_thinking,
+        n=payload.n,
     )
 
 
-def _to_response(result: GenerateResult) -> CompletionResponsePayload:
-    return CompletionResponsePayload(
+def _to_choice(index: int, result: GenerateResult) -> CompletionChoicePayload:
+    return CompletionChoicePayload(
+        index=index,
         completion=result.completion,
         confidence=result.confidence,
         token_confidences=result.token_confidences,
@@ -105,17 +128,33 @@ def _to_response(result: GenerateResult) -> CompletionResponsePayload:
     )
 
 
-def _stream_response(loaded: LoadedConfidenceModel, request: GenerateRequest) -> Iterator[str]:
-    with MODEL_LOCK:
-        for event in generate_confidence_stream(loaded, request):
+def _to_response(result: GenerateBatchResult) -> CompletionResponsePayload:
+    choices = [_to_choice(index, completion) for index, completion in enumerate(result.completions)]
+    first = choices[0]
+    return CompletionResponsePayload(
+        completion=first.completion,
+        confidence=first.confidence,
+        token_confidences=first.token_confidences,
+        token_ids=first.token_ids,
+        confidence_summary=first.confidence_summary,
+        finish_reason=first.finish_reason,
+        completions=choices,
+    )
+
+
+async def _stream_response(loaded: LoadedConfidenceModel, request: GenerateRequest) -> AsyncIterator[str]:
+    async with MODEL_LOCK:
+        async for event in async_generate_confidence_stream(loaded, request):
             if isinstance(event, StreamTokenEvent):
                 payload = StreamTokenPayload(
+                    index=event.index,
                     token_id=event.token_id,
                     text=event.text,
                     confidence=event.confidence,
                 )
             elif isinstance(event, StreamFinalEvent):
                 payload = StreamFinalPayload(
+                    index=event.index,
                     completion=event.completion,
                     confidence=event.confidence,
                     token_confidences=event.token_confidences,
@@ -126,6 +165,12 @@ def _stream_response(loaded: LoadedConfidenceModel, request: GenerateRequest) ->
                         tail10_mean=event.confidence_summary.tail10_mean,
                     ),
                     finish_reason=event.finish_reason,
+                )
+            elif isinstance(event, StreamBatchFinalEvent):
+                payload = StreamBatchFinalPayload(
+                    completions=[
+                        _to_choice(index, completion) for index, completion in enumerate(event.completions)
+                    ],
                 )
             else:
                 raise TypeError(f"Unexpected stream event: {event}")
@@ -150,23 +195,23 @@ app.add_middleware(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok", "model": "loaded" if MODEL is not None else "loading"}
 
 
 @app.post("/complete")
-def complete(payload: CompletionRequestPayload) -> CompletionResponsePayload:
+async def complete(payload: CompletionRequestPayload) -> CompletionResponsePayload:
     loaded = MODEL
     if loaded is None:
         raise RuntimeError("Model is not loaded.")
     request = _to_generate_request(payload)
-    with MODEL_LOCK:
-        result = generate_with_confidence(loaded, request)
+    async with MODEL_LOCK:
+        result = await async_generate_batch_with_confidence(loaded, request)
     return _to_response(result)
 
 
 @app.post("/complete/stream")
-def complete_stream(payload: CompletionRequestPayload) -> StreamingResponse:
+async def complete_stream(payload: CompletionRequestPayload) -> StreamingResponse:
     loaded = MODEL
     if loaded is None:
         raise RuntimeError("Model is not loaded.")
