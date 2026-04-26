@@ -1,6 +1,6 @@
-# Confidence Serving
+# Inference Server
 
-Minimal Hugging Face/PEFT inference server that emits completions with per-token confidence.
+FastAPI inference server and dashboard for confidence-aware generation.
 
 The server loads:
 
@@ -19,25 +19,41 @@ Token id `6` is then suppressed before choosing the next generated token.
 ## Run
 
 ```bash
-cd confidence_serving
-uv run confidence-server
+cd inference_server
+uv run python -m inference_server
 ```
 
-Server URL:
+Local dashboard:
 
 ```text
 http://127.0.0.1:8010
 ```
 
+For a public Vast.ai deployment, bind to all interfaces and set a shared token:
+
+```bash
+cd inference_server
+INFERENCE_HOST=0.0.0.0 INFERENCE_AUTH_TOKEN='replace-with-a-secret' uv run python -m inference_server
+```
+
+Share the mapped Vast URL with the token query parameter:
+
+```text
+http://PUBLIC_IP:PUBLIC_PORT/?token=replace-with-a-secret
+```
+
+The UI stores the token locally and sends it as a bearer token for API requests. API clients can also pass `Authorization: Bearer ...`.
+
 Example request:
 
 ```bash
 curl -s http://127.0.0.1:8010/complete \
+  -H 'authorization: Bearer replace-with-a-secret' \
   -H 'content-type: application/json' \
   -d '{
-    "messages": [{"role": "user", "content": "What is 2 + 2? Answer briefly."}],
-    "max_new_tokens": 32,
-    "temperature": 0,
+    "messages": [{"role": "user", "content": "Solve the following math problem. Give the final answer in the format: #### <answer>\n\nHow many distinct arrangements of the letters in MISSISSIPPI have no two S's adjacent?"}],
+    "max_new_tokens": 2048,
+    "temperature": 1.0,
     "top_p": 1,
     "enable_thinking": false,
     "n": 1
@@ -90,17 +106,19 @@ The stream ends with `{"type":"batch_final","completions":[...]}`.
 
 ## Frontend
 
-Open:
+The frontend is served by FastAPI at `/` and calls `/complete/stream` on the same origin.
 
-```text
-../confidence_frontend/index.html
+The UI source is TypeScript in `static/app.ts`. Rebuild the served JavaScript after frontend edits:
+
+```bash
+cd inference_server
+bun install
+bun run build
 ```
-
-The frontend calls `http://127.0.0.1:8010/complete/stream` and plots token confidence as the response streams.
 
 ## Smoke Test
 
 ```bash
-cd confidence_serving
-uv run confidence-smoke-test
+cd inference_server
+uv run inference-smoke-test
 ```

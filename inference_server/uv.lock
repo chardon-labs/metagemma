@@ -1160,9 +1160,9 @@ wheels = [
 ]
 
 [[package]]
-name = "unicorn-mafia-confidence-serving"
+name = "unicorn-mafia-inference-server"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "peft" },

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from confidence_serving.generate import ChatMessage, GenerateRequest, generate_batch_with_confidence, generate_with_confidence
-from confidence_serving.model_loader import load_confidence_model
-from confidence_serving.settings import CONFIDENCE_TOKEN, CONFIDENCE_TOKEN_ID
+from inference_server.generate import ChatMessage, GenerateRequest, generate_batch_with_confidence, generate_with_confidence
+from inference_server.model_loader import load_confidence_model
+from inference_server.settings import CONFIDENCE_TOKEN, CONFIDENCE_TOKEN_ID
 
 
 def main() -> None:

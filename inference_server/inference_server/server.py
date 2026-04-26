@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import hmac
 import json
+import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Literal, cast
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from confidence_serving.generate import (
+from inference_server.generate import (
     ChatMessage,
     GenerateBatchResult,
     GenerateRequest,
@@ -24,8 +27,8 @@ from confidence_serving.generate import (
     async_generate_batch_with_confidence,
     async_generate_confidence_stream,
 )
-from confidence_serving.model_loader import LoadedConfidenceModel, load_confidence_model
-from confidence_serving.settings import HOST, MAX_NEW_TOKENS, PORT, REPETITION_PENALTY, TEMPERATURE, TOP_P
+from inference_server.model_loader import LoadedConfidenceModel, load_confidence_model
+from inference_server.settings import AUTH_TOKEN, HOST, MAX_NEW_TOKENS, PORT, REPETITION_PENALTY, TEMPERATURE, TOP_P
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -33,6 +36,7 @@ LOGGER = logging.getLogger(__name__)
 
 MODEL: LoadedConfidenceModel | None = None
 MODEL_LOCK = asyncio.Lock()
+STATIC_DIR = Path(__file__).resolve().parents[1] / "static"
 
 
 class ChatMessagePayload(BaseModel):
@@ -98,6 +102,28 @@ class StreamFinalPayload(BaseModel):
 class StreamBatchFinalPayload(BaseModel):
     type: Literal["batch_final"] = "batch_final"
     completions: list[CompletionChoicePayload]
+
+
+def _request_token(request: Request) -> str | None:
+    authorization = request.headers.get("authorization")
+    if authorization is not None:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer" and token:
+            return token
+    return request.query_params.get("token")
+
+
+def require_auth(request: Request) -> None:
+    if AUTH_TOKEN is None:
+        return
+    token = _request_token(request)
+    if token is not None and hmac.compare_digest(token, AUTH_TOKEN):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing or invalid inference token.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _to_generate_request(payload: CompletionRequestPayload) -> GenerateRequest:
@@ -192,6 +218,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+@app.get("/")
+async def index(_: None = Depends(require_auth)) -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 @app.get("/health")
@@ -200,7 +232,7 @@ async def health() -> dict[str, str]:
 
 
 @app.post("/complete")
-async def complete(payload: CompletionRequestPayload) -> CompletionResponsePayload:
+async def complete(payload: CompletionRequestPayload, _: None = Depends(require_auth)) -> CompletionResponsePayload:
     loaded = MODEL
     if loaded is None:
         raise RuntimeError("Model is not loaded.")
@@ -211,7 +243,7 @@ async def complete(payload: CompletionRequestPayload) -> CompletionResponsePaylo
 
 
 @app.post("/complete/stream")
-async def complete_stream(payload: CompletionRequestPayload) -> StreamingResponse:
+async def complete_stream(payload: CompletionRequestPayload, _: None = Depends(require_auth)) -> StreamingResponse:
     loaded = MODEL
     if loaded is None:
         raise RuntimeError("Model is not loaded.")
@@ -220,7 +252,7 @@ async def complete_stream(payload: CompletionRequestPayload) -> StreamingRespons
 
 
 def main() -> None:
-    uvicorn.run(cast(str, "confidence_serving.server:app"), host=HOST, port=PORT)
+    uvicorn.run(cast(str, "inference_server.server:app"), host=HOST, port=PORT)
 
 
 if __name__ == "__main__":

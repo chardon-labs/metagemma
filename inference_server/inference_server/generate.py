@@ -9,8 +9,8 @@ import torch
 import torch.nn.functional as F
 from transformers import PreTrainedTokenizerBase
 
-from confidence_serving.model_loader import LoadedConfidenceModel
-from confidence_serving.settings import (
+from inference_server.model_loader import LoadedConfidenceModel
+from inference_server.settings import (
     CONFIDENCE_TOKEN,
     CONFIDENCE_TOKEN_ID,
     ENABLE_THINKING,
@@ -85,6 +85,12 @@ class StreamBatchFinalEvent:
 
 
 StreamEvent = StreamTokenEvent | StreamFinalEvent | StreamBatchFinalEvent
+STOP_TOKEN_NAMES = (
+    "eos_token",
+    "eot_token",
+    "etr_token",
+    "eoc_token",
+)
 
 
 class _StreamEnded:
@@ -160,6 +166,22 @@ def _sample_next_token(logits: torch.Tensor, temperature: float, top_p: float) -
     return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
 
+def stop_token_ids(tokenizer: PreTrainedTokenizerBase) -> set[int]:
+    token_ids: set[int] = set()
+    if tokenizer.eos_token_id is not None:
+        token_ids.add(int(tokenizer.eos_token_id))
+
+    for token_name in STOP_TOKEN_NAMES:
+        token = getattr(tokenizer, token_name, None)
+        if not isinstance(token, str):
+            continue
+        token_id = tokenizer.convert_tokens_to_ids(token)
+        if isinstance(token_id, int) and token_id >= 0:
+            token_ids.add(token_id)
+
+    return token_ids
+
+
 def _finish_result(
     *,
     tokenizer: PreTrainedTokenizerBase,
@@ -196,19 +218,28 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
 
     generated_ids = [[] for _ in range(request.n)]
     token_confidences = [[] for _ in range(request.n)]
+    repetition_token_ids = [input_ids[index].tolist() for index in range(request.n)]
     finished = [False for _ in range(request.n)]
     finish_reasons = ["length" for _ in range(request.n)]
-    eos_token_id = tokenizer.eos_token_id
+    stop_ids = stop_token_ids(tokenizer)
     pad_token_id = tokenizer.pad_token_id
     if pad_token_id is None:
-        pad_token_id = eos_token_id if eos_token_id is not None else 0
+        pad_token_id = next(iter(stop_ids), 0)
 
     with torch.inference_mode():
+        model_input_ids = input_ids
+        past_key_values = None
         for _ in range(request.max_new_tokens):
             if all(finished):
                 break
 
-            outputs = loaded.model(input_ids=input_ids, attention_mask=attention_mask, use_cache=False)
+            outputs = loaded.model(
+                input_ids=model_input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+            )
+            past_key_values = outputs.past_key_values
             logits = cast(torch.Tensor, outputs.logits[:, -1, :])
             confidence = torch.sigmoid(logits[:, CONFIDENCE_TOKEN_ID].float())
 
@@ -217,18 +248,15 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
             for index in range(request.n):
                 if finished[index]:
                     continue
-                prompt_ids = [
-                    int(token_id)
-                    for token_id, is_visible in zip(input_ids[index].tolist(), attention_mask[index].tolist(), strict=True)
-                    if int(is_visible) == 1
-                ]
                 sampling_logits[index : index + 1] = _apply_repetition_penalty(
                     sampling_logits[index : index + 1],
-                    prompt_ids,
+                    repetition_token_ids[index],
                     request.repetition_penalty,
                 )
 
             next_token = _sample_next_token(sampling_logits, request.temperature, request.top_p)
+            confidence_values = [float(value) for value in confidence.tolist()]
+            next_token_ids = [int(token_id) for token_id in next_token.tolist()]
             next_column = torch.full(
                 (request.n, 1),
                 pad_token_id,
@@ -241,15 +269,16 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
                 if finished[index]:
                     continue
 
-                confidence_value = float(confidence[index].item())
-                next_token_id = int(next_token[index].item())
-                if eos_token_id is not None and next_token_id == eos_token_id:
+                confidence_value = confidence_values[index]
+                next_token_id = next_token_ids[index]
+                if next_token_id in stop_ids:
                     finished[index] = True
                     finish_reasons[index] = "stop"
                     continue
 
                 generated_ids[index].append(next_token_id)
                 token_confidences[index].append(confidence_value)
+                repetition_token_ids[index].append(next_token_id)
                 next_column[index, 0] = next_token_id
                 next_attention[index, 0] = 1
 
@@ -264,6 +293,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
 
             input_ids = torch.cat([input_ids, next_column], dim=-1)
             attention_mask = torch.cat([attention_mask, next_attention], dim=-1)
+            model_input_ids = next_column
 
     final_events = [
         _finish_result(

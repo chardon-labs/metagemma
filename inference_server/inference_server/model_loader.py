@@ -10,8 +10,9 @@ from peft import PeftModel
 from torch import nn
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedTokenizerBase
 
-from confidence_serving.settings import (
+from inference_server.settings import (
     ARTIFACT_DIR,
+    ATTENTION_IMPLEMENTATION,
     BASE_MODEL_ID,
     CONFIDENCE_TOKEN,
     CONFIDENCE_TOKEN_ID,
@@ -70,6 +71,7 @@ def load_confidence_model() -> LoadedConfidenceModel:
     LOGGER.info("Loading base model %s", BASE_MODEL_ID)
     base_model = AutoModelForCausalLM.from_pretrained(
         BASE_MODEL_ID,
+        attn_implementation=ATTENTION_IMPLEMENTATION,
         torch_dtype=_torch_dtype(),
         device_map="auto",
         trust_remote_code=True,

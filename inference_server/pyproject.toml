@@ -1,7 +1,7 @@
 [project]
-name = "unicorn-mafia-confidence-serving"
+name = "unicorn-mafia-inference-server"
 version = "0.1.0"
-description = "Minimal confidence-aware inference server."
+description = "Confidence-aware inference server and dashboard."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.124.0",
@@ -13,8 +13,15 @@ dependencies = [
 ]
 
 [project.scripts]
-confidence-server = "confidence_serving.server:main"
-confidence-smoke-test = "confidence_serving.smoke_test:main"
+inference-server = "inference_server.server:main"
+inference-smoke-test = "inference_server.smoke_test:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["inference_server"]
 
 [tool.uv.sources]
 torch = [

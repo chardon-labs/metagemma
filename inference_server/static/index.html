@@ -4,7 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Confidence Test UI</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/static/vendor/uPlot.min.css" />
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="shell">
@@ -16,22 +18,22 @@
 
         <div class="field">
           <label for="endpoint">Endpoint</label>
-          <input id="endpoint" value="http://127.0.0.1:8010/complete/stream" />
+          <input id="endpoint" value="/complete/stream" />
         </div>
 
         <div class="field">
           <label for="prompt">Prompt</label>
-          <textarea id="prompt" rows="8">What is 2 + 2? Answer briefly.</textarea>
+          <textarea id="prompt" rows="8">How many distinct arrangements of the letters in MISSISSIPPI have no two S's adjacent?</textarea>
         </div>
 
         <div class="grid">
           <div class="field">
             <label for="maxTokens">Max tokens</label>
-            <input id="maxTokens" type="number" min="1" max="2048" value="128" />
+            <input id="maxTokens" type="number" min="1" max="2048" value="2048" />
           </div>
           <div class="field">
             <label for="temperature">Temperature</label>
-            <input id="temperature" type="number" min="0" max="2" step="0.05" value="0.7" />
+            <input id="temperature" type="number" min="0" max="2" step="0.05" value="1.0" />
           </div>
           <div class="field">
             <label for="topP">Top p</label>
@@ -65,8 +67,33 @@
           </div>
         </header>
 
-        <canvas id="chart" width="960" height="260" aria-label="Confidence chart"></canvas>
-        <pre id="completion" class="completion"></pre>
+        <div id="chart" class="chart" aria-label="Confidence chart"></div>
+        <section class="trace-panel" aria-label="Trace details">
+          <div id="traceSelector" class="trace-selector"></div>
+          <div class="trace-summary">
+            <div class="metric">
+              <span class="muted">Trace</span>
+              <strong id="selectedTrace">-</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Tokens</span>
+              <strong id="selectedTokens">-</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Mean</span>
+              <strong id="selectedMean">-</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Min</span>
+              <strong id="selectedMin">-</strong>
+            </div>
+            <div class="metric">
+              <span class="muted">Max</span>
+              <strong id="selectedMax">-</strong>
+            </div>
+          </div>
+          <div id="completion" class="completion token-preview"></div>
+        </section>
       </section>
 
       <section class="methodology" aria-label="Methodology">
@@ -90,6 +117,7 @@
       </section>
     </main>
 
-    <script src="./app.js"></script>
+    <script src="/static/vendor/uPlot.iife.min.js"></script>
+    <script src="/static/app.js"></script>
   </body>
 </html>
