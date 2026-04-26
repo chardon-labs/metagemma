@@ -1,59 +1,65 @@
-# Unicorn Mafia Confidence Fine-Tuning
+# MetaGemma
 
-This repo now has two separate `uv` projects so vLLM-based data generation and TRL/Torch
-fine-tuning can move independently.
+Steps to replicate the results.
 
-## Step 1: Split Projects
-
-Generate confidence traces with the vLLM project:
+## 1. Generate traces
 
 ```bash
 cd data_generation
-uv sync
 uv run python generate_trace.py
 ```
 
-Fine-tune from those traces with the fine-tuning project:
+This reads `../project_settings.json` and writes trace shards to the configured
+`trace_dir`, currently:
+
+```text
+traces/gemma-4-E2B-it-mixed-confidence-1200
+```
+
+To add only newly configured dataset examples to an existing trace snapshot:
+
+```bash
+cd data_generation
+uv run python generate_trace.py --append
+```
+
+## 2. Fine-tune
 
 ```bash
 cd fine_tuning
-uv sync
 uv run python finetune.py
 ```
 
-The fine-tuning script defaults to memory-saving settings: train/eval batch size 1
-and gradient checkpointing enabled.
+This reads the generated traces from `trace_dir` and writes the adapter,
+tokenizer, config, and `confidence_lm_head_row.pt` to the configured
+`output_dir`, currently:
 
-Both scripts keep shared artifacts at the repo root:
+```text
+outputs/gemma-4-E2B-it-mixed-confidence-3
+```
 
-- `traces/` for generated trace shards
-- `outputs/` for fine-tuned adapters and model artifacts
+## 3. Launch inference
 
-The old GRPO/RL loop has been removed.
+```bash
+cd inference_server
+uv run python -m inference_server
+```
 
-## Step 2: Gemma 4
+Open:
 
-Defaults now target `google/gemma-4-E2B-it`. The tokenizer assets are stored in
-`tokenizers/gemma-4-E2B-it/`, and `project_settings.json` selects `<unused0>` as the
-confidence token. In the Gemma 4 E2B tokenizer, `<unused0>` resolves to token id `6`.
+```text
+http://127.0.0.1:8010
+```
 
-## Step 3: More Evaluation Data
+For a public server:
 
-Trace generation now uses a mixed verifiable dataset registry:
+```bash
+cd inference_server
+INFERENCE_HOST=0.0.0.0 INFERENCE_AUTH_TOKEN='replace-with-a-secret' uv run python -m inference_server
+```
 
-- GSM8K
-- MATH-500
-- MMLU-Pro
-- ARC-Challenge
-- TruthfulQA MC1
-- FEVER
+Then open the mapped URL with the token:
 
-Generation enables Gemma thinking and caps each saved trace at 4096 total tokens
-including prompt and completion.
-
-Default generation samples up to 1200 SFT problems and 240 eval problems per
-dataset, with 1 generation per problem. The SFT split renders two thirds of each
-dataset with thinking enabled and the remaining third with thinking disabled.
-Adjust `DATASET_SAMPLE_COUNTS` in
-`data_generation/dataset_specs.py` or `NUM_GENERATIONS` in
-`data_generation/generate_trace.py` for larger runs.
+```text
+http://PUBLIC_IP:PUBLIC_PORT/?token=replace-with-a-secret
+```
