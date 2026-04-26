@@ -23,7 +23,7 @@ Environment overrides are defined in scripts/remote_config.sh.
 USAGE
 }
 
-RSYNC_ARGS=(-az --progress --exclude='.git/' --exclude='.venv/' --exclude='scripts/' --exclude='__pycache__/')
+RSYNC_ARGS=(-az --progress --exclude='.git/' --exclude='.venv/' --exclude='scripts/' --exclude='__pycache__/' --exclude='data/')
 
 while (($#)); do
   case "$1" in

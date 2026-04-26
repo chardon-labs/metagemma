@@ -69,7 +69,7 @@ class DatasetSampleCounts:
     eval_count: int
 
 
-DEFAULT_DATASET_SAMPLE_COUNTS = DatasetSampleCounts(sft_count=50, eval_count=10)
+DEFAULT_DATASET_SAMPLE_COUNTS = DatasetSampleCounts(sft_count=200, eval_count=30)
 DATASET_SAMPLE_COUNTS = {
     "gsm8k": DEFAULT_DATASET_SAMPLE_COUNTS,
     "math500": DEFAULT_DATASET_SAMPLE_COUNTS,

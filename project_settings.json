@@ -3,6 +3,6 @@
   "tokenizer_id": "tokenizers/gemma-4-E2B-it",
   "confidence_token": "<unused0>",
   "confidence_token_id": 6,
-  "trace_dir": "traces/gemma-4-E2B-it-mixed-confidence",
-  "output_dir": "outputs/gemma-4-E2B-it-mixed-confidence"
+  "trace_dir": "traces/gemma-4-E2B-it-mixed-confidence-200",
+  "output_dir": "outputs/gemma-4-E2B-it-mixed-confidence-2"
 }
