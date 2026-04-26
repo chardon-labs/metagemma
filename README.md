@@ -48,10 +48,12 @@ Trace generation now uses a mixed verifiable dataset registry:
 - TruthfulQA MC1
 - FEVER
 
-Generation enables Gemma thinking and caps each saved trace at 2048 total tokens
+Generation enables Gemma thinking and caps each saved trace at 4096 total tokens
 including prompt and completion.
 
-Default generation is intentionally small: 50 SFT problems and 10 eval problems
-per dataset, with 8 generations per problem. Adjust `DATASET_SAMPLE_COUNTS` in
+Default generation samples up to 1200 SFT problems and 240 eval problems per
+dataset, with 1 generation per problem. The SFT split renders two thirds of each
+dataset with thinking enabled and the remaining third with thinking disabled.
+Adjust `DATASET_SAMPLE_COUNTS` in
 `data_generation/dataset_specs.py` or `NUM_GENERATIONS` in
 `data_generation/generate_trace.py` for larger runs.

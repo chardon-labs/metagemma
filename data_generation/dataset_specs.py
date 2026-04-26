@@ -69,7 +69,7 @@ class DatasetSampleCounts:
     eval_count: int
 
 
-DEFAULT_DATASET_SAMPLE_COUNTS = DatasetSampleCounts(sft_count=200, eval_count=30)
+DEFAULT_DATASET_SAMPLE_COUNTS = DatasetSampleCounts(sft_count=1600, eval_count=240)
 DATASET_SAMPLE_COUNTS = {
     "gsm8k": DEFAULT_DATASET_SAMPLE_COUNTS,
     "math500": DEFAULT_DATASET_SAMPLE_COUNTS,
@@ -94,7 +94,7 @@ def _split_single_dataset(dataset: Dataset, *, seed: int, sft_count: int, eval_c
     shuffled = cast(Dataset, dataset.shuffle(seed=seed).select(range(total)))
     sft_end = min(sft_count, len(shuffled))
     sft_split = shuffled.select(range(sft_end))
-    eval_split = shuffled.select(range(sft_end, len(shuffled)))
+    eval_split = shuffled.select(range(sft_end, len(shuffled))) if sft_end < len(shuffled) else shuffled.select([])
     return cast(Dataset, sft_split), cast(Dataset, eval_split)
 
 

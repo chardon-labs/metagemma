@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import random
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -115,6 +116,15 @@ def config_dict(config: FinetuneConfig) -> dict[str, Any]:
     return payload
 
 
+def row_enable_thinking(row: Mapping[str, Any]) -> bool:
+    value = row.get("enable_thinking")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.lower() == "true"
+    return True
+
+
 class TraceDataset(Dataset[dict[str, Any]]):
     def __init__(self, *, trace_dir: Path, split: str) -> None:
         self.trace_dir = trace_dir
@@ -146,6 +156,7 @@ class TraceDataset(Dataset[dict[str, Any]]):
                         "row_id": int(row["row_id"]),
                         "problem_id": int(row["problem_id"]),
                         "math_verify_label": float(row["math_verify_label"]),
+                        "enable_thinking": row_enable_thinking(row),
                         "prompt_token_ids": prompt_token_ids[prompt_start:prompt_end].copy(),
                         "completion_token_ids": completion_token_ids[token_start:token_end].copy(),
                         "top_logprob_token_ids": top_logprob_token_ids[token_start:token_end].copy(),
@@ -175,6 +186,19 @@ class TraceDataset(Dataset[dict[str, Any]]):
             "correct_rate": correct_rate,
             "majority_class_accuracy": majority_accuracy,
         }
+
+    def thinking_label_summary(self) -> dict[str, float]:
+        summary: dict[str, float] = {}
+        groups = (("thinking", True), ("non_thinking", False))
+        for name, enable_thinking in groups:
+            samples = [sample for sample in self.samples if bool(sample["enable_thinking"]) == enable_thinking]
+            total = len(samples)
+            correct = sum(int(sample["math_verify_label"]) for sample in samples)
+            incorrect = total - correct
+            summary[f"{name}_samples"] = float(total)
+            summary[f"{name}_correct"] = float(correct)
+            summary[f"{name}_incorrect"] = float(incorrect)
+        return summary
 
 
 class BalancedBinaryBatchSampler(BatchSampler):
@@ -619,8 +643,17 @@ def log_metrics(wandb_run: Any | None, metrics: dict[str, float], *, step: int, 
 
 def log_dataset_summary(wandb_run: Any | None, dataset: TraceDataset, *, prefix: str) -> None:
     summary = dataset.label_summary()
+    summary.update(dataset.thinking_label_summary())
     payload = {f"{prefix}/{key}": value for key, value in summary.items()}
     LOGGER.info("%s label summary: %s", prefix, payload)
+    LOGGER.info(
+        "%s thinking traces: correct=%s incorrect=%s; non-thinking traces: correct=%s incorrect=%s",
+        prefix,
+        int(summary["thinking_correct"]),
+        int(summary["thinking_incorrect"]),
+        int(summary["non_thinking_correct"]),
+        int(summary["non_thinking_incorrect"]),
+    )
     if wandb_run is not None:
         import wandb
 
@@ -743,7 +776,7 @@ def train() -> None:
 
     tokenizer = cast(
         PreTrainedTokenizerBase,
-        AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True),
+        AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True, attn_implementation="flash_attention_2"),
     )
     verify_confidence_token(tokenizer)
     if tokenizer.pad_token is None:

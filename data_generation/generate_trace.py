@@ -26,7 +26,7 @@ from confidence_trace import (
     write_trace_shard,
 )
 from dataset_specs import dataset_manifest_entries, prepare_problem_splits
-from scorers import score_completion
+from scorers import ScoreResult, score_completion
 
 
 LOGGER = logging.getLogger(__name__)
@@ -36,8 +36,10 @@ MODEL_ID = DEFAULT_MODEL_ID
 TOKENIZER_ID: str | None = DEFAULT_TOKENIZER_ID
 OUTPUT_DIR = Path(DEFAULT_TRACE_DIR)
 SEED = 42
-NUM_GENERATIONS = 8
-MAX_SEQUENCE_LENGTH = 2048
+NUM_GENERATIONS = 1
+SFT_THINKING_FRACTION_NUMERATOR = 2
+SFT_THINKING_FRACTION_DENOMINATOR = 3
+MAX_SEQUENCE_LENGTH = 4096
 MAX_TOKENS = 2048
 ENABLE_THINKING = True
 LOGPROBS_K = 20
@@ -91,6 +93,12 @@ def prompt_batches(
         yield items[start : start + max_prompts_per_generate]
 
 
+def hit_generation_token_limit(finish_reason: str | None, *, token_count: int, max_tokens: int) -> bool:
+    if finish_reason == "length":
+        return True
+    return finish_reason is None and token_count >= max_tokens
+
+
 def make_sampling_params(config: GenerateTraceConfig, *, max_tokens: int) -> SamplingParams:
     return SamplingParams(
         n=config.num_generations,
@@ -138,6 +146,7 @@ class TraceShardBuilder:
         finish_reason: str | None,
         stop_reason: int | str | None,
         generation_config: Mapping[str, Any],
+        force_incorrect: bool = False,
     ) -> None:
         if completion_token_ids.size == 0:
             LOGGER.warning("Skipping empty completion for problem_id=%s sample_id=%s", problem["problem_id"], sample_id)
@@ -159,7 +168,17 @@ class TraceShardBuilder:
             raise ValueError(f"top_token_ids length {top_token_ids.shape[0]} != token length {token_length}")
 
         gold_answer = str(problem["gold_answer"])
-        score = score_completion(completion_text, problem)
+        if force_incorrect:
+            score = ScoreResult(
+                label=0,
+                extracted_prediction="",
+                normalized_prediction="",
+                normalized_gold=gold_answer,
+                scorer=str(problem["scorer"]),
+                score_error="Generation hit token limit.",
+            )
+        else:
+            score = score_completion(completion_text, problem)
         row = {
             "row_id": self.row_id,
             "problem_id": int(problem["problem_id"]),
@@ -292,6 +311,7 @@ def generate_split(
     builder: TraceShardBuilder,
     split: str,
     problems: Sequence[Mapping[str, Any]],
+    enable_thinking: bool,
 ) -> None:
     generation_config = {
         "model_id": config.model_id,
@@ -302,7 +322,7 @@ def generate_split(
         "top_k": config.top_k,
         "configured_max_tokens": config.max_tokens,
         "max_sequence_length": config.max_sequence_length,
-        "enable_thinking": config.enable_thinking,
+        "enable_thinking": enable_thinking,
         "logprobs_k": config.logprobs_k,
         "forbidden_token_id": CONFIDENCE_TOKEN_ID,
     }
@@ -322,7 +342,7 @@ def generate_split(
             tokenizer=tokenizer,
             split=split,
             problems=problem_batch,
-            enable_thinking=config.enable_thinking,
+            enable_thinking=enable_thinking,
         )
         valid_prompt_texts: list[str] = []
         valid_prompt_ids: list[np.ndarray] = []
@@ -369,6 +389,19 @@ def generate_split(
                         completion.index,
                     )
                     continue
+                token_limited = hit_generation_token_limit(
+                    completion.finish_reason,
+                    token_count=int(completion_ids.shape[0]),
+                    max_tokens=max_tokens,
+                )
+                if token_limited:
+                    LOGGER.warning(
+                        "Marking token-limited completion incorrect for problem_id=%s sample_id=%s token_length=%s max_tokens=%s",
+                        record["problem"]["problem_id"],
+                        completion.index,
+                        int(completion_ids.shape[0]),
+                        max_tokens,
+                    )
                 top_token_ids, top_logprobs, top_mask = completion_logprob_arrays(
                     completion_logprobs=completion.logprobs,
                     token_count=int(completion_ids.shape[0]),
@@ -391,7 +424,24 @@ def generate_split(
                         **generation_config,
                         "max_tokens": max_tokens,
                     },
+                    force_incorrect=token_limited,
                 )
+
+
+def split_sft_thinking_groups(
+    problems: Sequence[Mapping[str, Any]],
+) -> tuple[list[Mapping[str, Any]], list[Mapping[str, Any]]]:
+    by_dataset: dict[str, list[Mapping[str, Any]]] = {}
+    for problem in problems:
+        by_dataset.setdefault(str(problem["source_dataset"]), []).append(problem)
+
+    thinking_problems: list[Mapping[str, Any]] = []
+    no_thinking_problems: list[Mapping[str, Any]] = []
+    for dataset_problems in by_dataset.values():
+        thinking_count = len(dataset_problems) * SFT_THINKING_FRACTION_NUMERATOR // SFT_THINKING_FRACTION_DENOMINATOR
+        thinking_problems.extend(dataset_problems[:thinking_count])
+        no_thinking_problems.extend(dataset_problems[thinking_count:])
+    return thinking_problems, no_thinking_problems
 
 
 def main() -> None:
@@ -406,9 +456,13 @@ def main() -> None:
     verify_confidence_token(tokenizer)
 
     sft_problems, eval_problems = prepare_problem_splits(seed=config.seed)
-    split_items: list[tuple[str, Sequence[Mapping[str, Any]]]] = [("sft", sft_problems)]
+    sft_thinking_problems, sft_no_thinking_problems = split_sft_thinking_groups(sft_problems)
+    split_items: list[tuple[str, Sequence[Mapping[str, Any]], bool]] = [
+        ("sft", sft_thinking_problems, True),
+        ("sft", sft_no_thinking_problems, False),
+    ]
     if not config.skip_eval_generation:
-        split_items.append(("eval", eval_problems))
+        split_items.append(("eval", eval_problems, config.enable_thinking))
 
     llm = LLM(
         model=config.model_id,
@@ -425,8 +479,13 @@ def main() -> None:
         max_sequence_length=config.max_sequence_length,
     )
 
-    for split, problems in split_items:
-        LOGGER.info("Generating %s traces for %s problems", split, len(problems))
+    for split, problems, enable_thinking in split_items:
+        LOGGER.info(
+            "Generating %s traces for %s problems with enable_thinking=%s",
+            split,
+            len(problems),
+            enable_thinking,
+        )
         generate_split(
             llm=llm,
             tokenizer=tokenizer,
@@ -434,6 +493,7 @@ def main() -> None:
             builder=builder,
             split=split,
             problems=problems,
+            enable_thinking=enable_thinking,
         )
 
     builder.flush()
@@ -450,7 +510,7 @@ def main() -> None:
             num_generations=config.num_generations,
             max_tokens=config.max_tokens,
             max_sequence_length=config.max_sequence_length,
-            enable_thinking=config.enable_thinking,
+            enable_thinking=None,
             logprobs_k=config.logprobs_k,
             forbidden_token_id=CONFIDENCE_TOKEN_ID,
             shards=builder.shards,
