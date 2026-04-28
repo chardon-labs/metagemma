@@ -63,3 +63,12 @@ Then open the mapped URL with the token:
 ```text
 http://PUBLIC_IP:PUBLIC_PORT/?token=replace-with-a-secret
 ```
+
+## Sync remote artifacts
+
+```bash
+./scripts/sync_remote_artifacts.sh
+```
+
+This pulls the configured `trace_dir` and `output_dir` from the remote machine into
+local `data/`, preserving their relative paths.

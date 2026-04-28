@@ -28,7 +28,7 @@ Build a reusable Python wheel for running coding-agent episodes against isolated
 - Match Pi's default coding-agent interface during training and inference.
 - Reuse or mirror Pi's default system prompt and tool schemas.
 - Default active tools are `read`, `bash`, `edit`, and `write`.
-- Optional read-only exploration tools are `grep`, `find`, and `ls`.
+- Do not expose additional exploration tools such as `grep`, `find`, or `ls`; callers should install and invoke those utilities through `bash` when needed.
 - Treat Pi's OpenAI-compatible message/tool format as the high-level episode schema.
 - Treat the Gemma chat-template rendering as the token-level training format.
 
@@ -45,14 +45,28 @@ Build a reusable Python wheel for running coding-agent episodes against isolated
 
 ## Sandbox Requirements
 
+- Provide a common backend interface so callers can switch sandbox implementations without changing the agent/tool loop.
+- Implement `BubblewrapBackend` for training/RL and `ProotBackend` for locked-down inference containers.
 - Each episode gets a fresh isolated filesystem.
 - Mount only the episode workspace as writable inside the sandbox.
-- Disable network by default.
+- Do not provide network access from sandboxes; networking is outside the harness requirements.
 - Support wall-clock timeouts for all commands.
 - Support CPU, memory, file-size, and process-count limits where the host permits it.
-- Prefer cgroup v2 or `systemd-run --user --scope` limits when available.
-- Fall back to `prlimit` where cgroups are unavailable.
 - Assume accidental resource abuse, not a malicious adversary.
+
+## Bubblewrap Backend
+
+- Use where `bwrap` can create user, mount, PID, and filesystem namespaces.
+- Use a read-only rootfs with a per-episode writable workspace and isolated temporary directory.
+- Fail fast with an actionable error if namespace creation is blocked by the host/container runtime.
+
+## PRoot Backend
+
+- Use where nested namespaces are unavailable.
+- Emulate a rootfs and bind the per-episode workspace into it.
+- Do not rely on Docker-in-Docker, host sysctls, privileged container flags, or Bubblewrap.
+- Treat PRoot as a filesystem isolation aid, not a strong security boundary.
+- Detect whether `ptrace` is blocked and report a clear unsupported-backend error if PRoot cannot run.
 
 ## Dataset Bootstrap Target
 
