@@ -244,13 +244,13 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
     if pad_token_id is None:
         pad_token_id = next(iter(stop_ids), 0)
 
-    with torch.inference_mode():
-        model_input_ids = input_ids
-        past_key_values = None
-        for _ in range(request.max_new_tokens):
-            if all(finished):
-                break
+    model_input_ids = input_ids
+    past_key_values = None
+    for _ in range(request.max_new_tokens):
+        if all(finished):
+            break
 
+        with torch.inference_mode():
             outputs = loaded.model(
                 input_ids=model_input_ids,
                 attention_mask=attention_mask,
@@ -278,47 +278,48 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
             confidence_values = [float(value) for value in confidence.tolist()]
             position_values = [float(value) for value in position.tolist()]
             next_token_ids = [int(token_id) for token_id in next_token.tolist()]
-            next_column = torch.full(
-                (request.n, 1),
-                pad_token_id,
-                device=input_ids.device,
-                dtype=input_ids.dtype,
+
+        next_column = torch.full(
+            (request.n, 1),
+            pad_token_id,
+            device=input_ids.device,
+            dtype=input_ids.dtype,
+        )
+        next_attention = torch.zeros((request.n, 1), device=attention_mask.device, dtype=attention_mask.dtype)
+
+        for index in range(request.n):
+            if finished[index]:
+                continue
+
+            confidence_value = confidence_values[index]
+            position_value = position_values[index]
+            next_token_id = next_token_ids[index]
+            if next_token_id in stop_ids:
+                finished[index] = True
+                finish_reasons[index] = "stop"
+                continue
+
+            generated_ids[index].append(next_token_id)
+            token_confidences[index].append(confidence_value)
+            token_positions[index].append(position_value)
+            repetition_token_ids[index].append(next_token_id)
+            next_column[index, 0] = next_token_id
+            next_attention[index, 0] = 1
+
+            token_text = cast(str, tokenizer.decode([next_token_id], skip_special_tokens=True))
+            token_text = token_text.replace(CONFIDENCE_TOKEN, "")
+            token_text = token_text.replace(POSITION_TOKEN, "")
+            yield StreamTokenEvent(
+                index=index,
+                token_id=next_token_id,
+                text=token_text,
+                confidence=confidence_value,
+                position=position_value,
             )
-            next_attention = torch.zeros((request.n, 1), device=attention_mask.device, dtype=attention_mask.dtype)
 
-            for index in range(request.n):
-                if finished[index]:
-                    continue
-
-                confidence_value = confidence_values[index]
-                position_value = position_values[index]
-                next_token_id = next_token_ids[index]
-                if next_token_id in stop_ids:
-                    finished[index] = True
-                    finish_reasons[index] = "stop"
-                    continue
-
-                generated_ids[index].append(next_token_id)
-                token_confidences[index].append(confidence_value)
-                token_positions[index].append(position_value)
-                repetition_token_ids[index].append(next_token_id)
-                next_column[index, 0] = next_token_id
-                next_attention[index, 0] = 1
-
-                token_text = cast(str, tokenizer.decode([next_token_id], skip_special_tokens=True))
-                token_text = token_text.replace(CONFIDENCE_TOKEN, "")
-                token_text = token_text.replace(POSITION_TOKEN, "")
-                yield StreamTokenEvent(
-                    index=index,
-                    token_id=next_token_id,
-                    text=token_text,
-                    confidence=confidence_value,
-                    position=position_value,
-                )
-
-            input_ids = torch.cat([input_ids, next_column], dim=-1)
-            attention_mask = torch.cat([attention_mask, next_attention], dim=-1)
-            model_input_ids = next_column
+        input_ids = torch.cat([input_ids, next_column], dim=-1)
+        attention_mask = torch.cat([attention_mask, next_attention], dim=-1)
+        model_input_ids = next_column
 
     final_events = [
         _finish_result(

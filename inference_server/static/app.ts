@@ -230,7 +230,6 @@ function chartOptions(
     },
     axes: [
       {
-        label: "Token",
         values: (_plot, ticks) => ticks.map((tick) => String(Math.round(tick))),
       },
       {

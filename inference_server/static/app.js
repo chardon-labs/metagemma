@@ -129,7 +129,6 @@ function chartOptions(root, sourceTraces, yLabel, selectedColor, idleColor) {
         },
         axes: [
             {
-                label: "Token",
                 values: (_plot, ticks) => ticks.map((tick) => String(Math.round(tick))),
             },
             {

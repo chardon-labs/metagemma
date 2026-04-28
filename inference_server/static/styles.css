@@ -229,7 +229,9 @@ button:disabled {
 }
 
 .chart {
+  position: relative;
   width: 100%;
+  min-height: 120px;
   height: 100%;
   border-bottom: 1px solid var(--line);
   cursor: crosshair;
@@ -237,6 +239,7 @@ button:disabled {
 
 .position-chart {
   background: #fffdf8;
+  border-top: 1px solid var(--line-strong);
 }
 
 .chart .uplot {
@@ -260,7 +263,9 @@ button:disabled {
 .trace-panel {
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr);
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .trace-selector {
@@ -301,6 +306,8 @@ button:disabled {
   margin: 0;
   padding: 16px;
   overflow: auto;
+  min-height: 0;
+  height: 100%;
   font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
