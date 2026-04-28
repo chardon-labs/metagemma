@@ -16,6 +16,8 @@ from inference_server.settings import (
     ENABLE_THINKING,
     INFERENCE_SEED,
     MAX_NEW_TOKENS,
+    POSITION_TOKEN,
+    POSITION_TOKEN_ID,
     REPETITION_PENALTY,
     TEMPERATURE,
     TOP_P,
@@ -52,6 +54,7 @@ class GenerateResult:
     completion: str
     token_ids: list[int]
     token_confidences: list[float]
+    token_positions: list[float]
     confidence: float | None
     confidence_summary: ConfidenceSummary
     finish_reason: str
@@ -68,6 +71,7 @@ class StreamTokenEvent:
     token_id: int
     text: str
     confidence: float
+    position: float
 
 
 @dataclass(frozen=True)
@@ -76,6 +80,7 @@ class StreamFinalEvent:
     completion: str
     token_ids: list[int]
     token_confidences: list[float]
+    token_positions: list[float]
     confidence: float | None
     confidence_summary: ConfidenceSummary
     finish_reason: str
@@ -195,16 +200,19 @@ def _finish_result(
     index: int,
     generated_ids: list[int],
     token_confidences: list[float],
+    token_positions: list[float],
     finish_reason: str,
 ) -> StreamFinalEvent:
     text = cast(str, tokenizer.decode(generated_ids, skip_special_tokens=True))
     text = text.replace(CONFIDENCE_TOKEN, "")
+    text = text.replace(POSITION_TOKEN, "")
     summary = _summary(token_confidences)
     return StreamFinalEvent(
         index=index,
         completion=text,
         token_ids=generated_ids,
         token_confidences=token_confidences,
+        token_positions=token_positions,
         confidence=summary.final,
         confidence_summary=summary,
         finish_reason=finish_reason,
@@ -227,6 +235,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
 
     generated_ids = [[] for _ in range(request.n)]
     token_confidences = [[] for _ in range(request.n)]
+    token_positions = [[] for _ in range(request.n)]
     repetition_token_ids = [input_ids[index].tolist() for index in range(request.n)]
     finished = [False for _ in range(request.n)]
     finish_reasons = ["length" for _ in range(request.n)]
@@ -251,9 +260,11 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
             past_key_values = outputs.past_key_values
             logits = cast(torch.Tensor, outputs.logits[:, -1, :])
             confidence = torch.sigmoid(logits[:, CONFIDENCE_TOKEN_ID].float())
+            position = torch.sigmoid(logits[:, POSITION_TOKEN_ID].float())
 
             sampling_logits = logits.clone()
             sampling_logits[:, CONFIDENCE_TOKEN_ID] = -torch.inf
+            sampling_logits[:, POSITION_TOKEN_ID] = -torch.inf
             for index in range(request.n):
                 if finished[index]:
                     continue
@@ -265,6 +276,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
 
             next_token = _sample_next_token(sampling_logits, request.temperature, request.top_p, generator)
             confidence_values = [float(value) for value in confidence.tolist()]
+            position_values = [float(value) for value in position.tolist()]
             next_token_ids = [int(token_id) for token_id in next_token.tolist()]
             next_column = torch.full(
                 (request.n, 1),
@@ -279,6 +291,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
                     continue
 
                 confidence_value = confidence_values[index]
+                position_value = position_values[index]
                 next_token_id = next_token_ids[index]
                 if next_token_id in stop_ids:
                     finished[index] = True
@@ -287,17 +300,20 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
 
                 generated_ids[index].append(next_token_id)
                 token_confidences[index].append(confidence_value)
+                token_positions[index].append(position_value)
                 repetition_token_ids[index].append(next_token_id)
                 next_column[index, 0] = next_token_id
                 next_attention[index, 0] = 1
 
                 token_text = cast(str, tokenizer.decode([next_token_id], skip_special_tokens=True))
                 token_text = token_text.replace(CONFIDENCE_TOKEN, "")
+                token_text = token_text.replace(POSITION_TOKEN, "")
                 yield StreamTokenEvent(
                     index=index,
                     token_id=next_token_id,
                     text=token_text,
                     confidence=confidence_value,
+                    position=position_value,
                 )
 
             input_ids = torch.cat([input_ids, next_column], dim=-1)
@@ -310,6 +326,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
             index=index,
             generated_ids=generated_ids[index],
             token_confidences=token_confidences[index],
+            token_positions=token_positions[index],
             finish_reason=finish_reasons[index],
         )
         for index in range(request.n)
@@ -322,6 +339,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
                 completion=event.completion,
                 token_ids=event.token_ids,
                 token_confidences=event.token_confidences,
+                token_positions=event.token_positions,
                 confidence=event.confidence,
                 confidence_summary=event.confidence_summary,
                 finish_reason=event.finish_reason,

@@ -75,6 +75,7 @@ class CompletionChoicePayload(BaseModel):
     completion: str
     confidence: float | None
     token_confidences: list[float]
+    token_positions: list[float]
     token_ids: list[int]
     confidence_summary: ConfidenceSummaryPayload
     finish_reason: str
@@ -84,6 +85,7 @@ class CompletionResponsePayload(BaseModel):
     completion: str
     confidence: float | None
     token_confidences: list[float]
+    token_positions: list[float]
     token_ids: list[int]
     confidence_summary: ConfidenceSummaryPayload
     finish_reason: str
@@ -96,6 +98,7 @@ class StreamTokenPayload(BaseModel):
     token_id: int
     text: str
     confidence: float
+    position: float
 
 
 class StreamFinalPayload(BaseModel):
@@ -104,6 +107,7 @@ class StreamFinalPayload(BaseModel):
     completion: str
     confidence: float | None
     token_confidences: list[float]
+    token_positions: list[float]
     token_ids: list[int]
     confidence_summary: ConfidenceSummaryPayload
     finish_reason: str
@@ -155,6 +159,7 @@ def _to_choice(index: int, result: GenerateResult) -> CompletionChoicePayload:
         completion=result.completion,
         confidence=result.confidence,
         token_confidences=result.token_confidences,
+        token_positions=result.token_positions,
         token_ids=result.token_ids,
         confidence_summary=ConfidenceSummaryPayload(
             final=result.confidence_summary.final,
@@ -172,6 +177,7 @@ def _to_response(result: GenerateBatchResult) -> CompletionResponsePayload:
         completion=first.completion,
         confidence=first.confidence,
         token_confidences=first.token_confidences,
+        token_positions=first.token_positions,
         token_ids=first.token_ids,
         confidence_summary=first.confidence_summary,
         finish_reason=first.finish_reason,
@@ -188,6 +194,7 @@ async def _stream_response(loaded: LoadedConfidenceModel, request: GenerateReque
                     token_id=event.token_id,
                     text=event.text,
                     confidence=event.confidence,
+                    position=event.position,
                 )
             elif isinstance(event, StreamFinalEvent):
                 payload = StreamFinalPayload(
@@ -195,6 +202,7 @@ async def _stream_response(loaded: LoadedConfidenceModel, request: GenerateReque
                     completion=event.completion,
                     confidence=event.confidence,
                     token_confidences=event.token_confidences,
+                    token_positions=event.token_positions,
                     token_ids=event.token_ids,
                     confidence_summary=ConfidenceSummaryPayload(
                         final=event.confidence_summary.final,

@@ -19,17 +19,22 @@ const selectedMean = query("#selectedMean");
 const selectedMin = query("#selectedMin");
 const selectedMax = query("#selectedMax");
 const chartRoot = query("#chart");
+const positionChartRoot = query("#positionChart");
 const traceCount = 16;
 const traceColor = "rgba(31, 122, 140, 0.22)";
 const highlightColor = "#0f3f46";
+const positionTraceColor = "rgba(181, 95, 31, 0.22)";
+const positionHighlightColor = "#8a3f10";
 const renderIntervalMs = 100;
 const maxPlotPoints = 700;
 let controller = null;
 let traces = emptyTraceNumbers();
+let positionTraces = emptyTraceNumbers();
 let tokenTexts = emptyTraceTexts();
 let finalResults = [];
 let selectedTraceIndex = 0;
 let plot = null;
+let positionPlot = null;
 let renderTimer = null;
 let lastRenderTime = 0;
 let renderedTraceIndex = -1;
@@ -87,12 +92,12 @@ function confidenceColor(value) {
     const hue = clamped * 120;
     return `hsla(${hue}, 65%, 48%, 0.28)`;
 }
-function chartData() {
-    const maxLength = Math.max(1, ...traces.map((values) => values.length));
+function chartData(sourceTraces) {
+    const maxLength = Math.max(1, ...sourceTraces.map((values) => values.length));
     const pointCount = Math.min(maxLength, maxPlotPoints);
     const stride = Math.max(1, Math.ceil(maxLength / maxPlotPoints));
     const x = Array.from({ length: pointCount }, (_, index) => Math.min(index * stride, maxLength - 1));
-    const ySeries = plotTraceOrder().map((traceIndex) => x.map((tokenIndex) => smoothedValueAt(traces[traceIndex] ?? [], tokenIndex)));
+    const ySeries = plotTraceOrder().map((traceIndex) => x.map((tokenIndex) => smoothedValueAt(sourceTraces[traceIndex] ?? [], tokenIndex)));
     return [x, ...ySeries];
 }
 function plotTraceOrder() {
@@ -108,8 +113,8 @@ function smoothedValueAt(values, index) {
     const next = values[index + 1] ?? value;
     return previous * 0.2 + value * 0.6 + next * 0.2;
 }
-function chartOptions() {
-    const rect = chartRoot.getBoundingClientRect();
+function chartOptions(root, sourceTraces, yLabel, selectedColor, idleColor) {
+    const rect = root.getBoundingClientRect();
     return {
         width: Math.max(1, Math.floor(rect.width)),
         height: Math.max(1, Math.floor(rect.height)),
@@ -128,48 +133,60 @@ function chartOptions() {
                 values: (_plot, ticks) => ticks.map((tick) => String(Math.round(tick))),
             },
             {
-                label: "Confidence",
+                label: yLabel,
                 values: (_plot, ticks) => ticks.map((tick) => tick.toFixed(2)),
             },
         ],
         series: [
             {},
-            ...plotTraceOrder().map((traceIndex) => traceSeries(traceIndex)),
+            ...plotTraceOrder().map((traceIndex) => traceSeries(traceIndex, selectedColor, idleColor)),
         ],
     };
 }
-function traceSeries(index) {
+function traceSeries(index, selectedColor, idleColor) {
     return {
         label: `Trace ${index}`,
         scale: "y",
-        stroke: index === selectedTraceIndex ? highlightColor : traceColor,
+        stroke: index === selectedTraceIndex ? selectedColor : idleColor,
         width: index === selectedTraceIndex ? 3 : 1.4,
         points: { show: false },
     };
 }
 function initPlot() {
-    plot = new uPlot(chartOptions(), chartData(), chartRoot);
+    plot = new uPlot(chartOptions(chartRoot, traces, "Confidence", highlightColor, traceColor), chartData(traces), chartRoot);
     const overlay = plot.root.querySelector(".u-over");
     if (overlay instanceof HTMLElement) {
-        overlay.addEventListener("click", handleChartClick);
+        overlay.addEventListener("click", (event) => handleChartClick(event, plot, traces));
+    }
+    positionPlot = new uPlot(chartOptions(positionChartRoot, positionTraces, "Position", positionHighlightColor, positionTraceColor), chartData(positionTraces), positionChartRoot);
+    const positionOverlay = positionPlot.root.querySelector(".u-over");
+    if (positionOverlay instanceof HTMLElement) {
+        positionOverlay.addEventListener("click", (event) => handleChartClick(event, positionPlot, positionTraces));
     }
 }
 function updatePlot() {
-    if (plot === null)
+    updateSinglePlot(plot, traces, highlightColor, traceColor);
+    updateSinglePlot(positionPlot, positionTraces, positionHighlightColor, positionTraceColor);
+}
+function updateSinglePlot(targetPlot, sourceTraces, selectedColor, idleColor) {
+    if (targetPlot === null)
         return;
     plotTraceOrder().forEach((traceIndex, displayIndex) => {
-        plot?.setSeries(displayIndex + 1, traceSeries(traceIndex), false);
+        targetPlot.setSeries(displayIndex + 1, traceSeries(traceIndex, selectedColor, idleColor), false);
     });
-    plot.setData(chartData(), true);
+    targetPlot.setData(chartData(sourceTraces), true);
 }
 function resizePlot() {
-    if (plot === null)
-        return;
-    const rect = chartRoot.getBoundingClientRect();
-    plot.setSize({ width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)) });
+    resizeSinglePlot(plot, chartRoot);
+    resizeSinglePlot(positionPlot, positionChartRoot);
 }
-function handleChartClick(event) {
-    const activePlot = plot;
+function resizeSinglePlot(targetPlot, root) {
+    if (targetPlot === null)
+        return;
+    const rect = root.getBoundingClientRect();
+    targetPlot.setSize({ width: Math.max(1, Math.floor(rect.width)), height: Math.max(1, Math.floor(rect.height)) });
+}
+function handleChartClick(event, activePlot, sourceTraces) {
     if (activePlot === null)
         return;
     const overlay = activePlot.root.querySelector(".u-over");
@@ -179,11 +196,11 @@ function handleChartClick(event) {
     const tokenIndex = Math.max(0, Math.round(activePlot.posToVal(event.clientX - rect.left, "x")));
     let bestTrace = selectedTraceIndex;
     let bestDistance = Number.POSITIVE_INFINITY;
-    traces.forEach((values, traceIndex) => {
-        const confidence = values[Math.min(tokenIndex, values.length - 1)];
-        if (confidence === undefined)
+    sourceTraces.forEach((values, traceIndex) => {
+        const value = values[Math.min(tokenIndex, values.length - 1)];
+        if (value === undefined)
             return;
-        const y = activePlot.valToPos(confidence, "y");
+        const y = activePlot.valToPos(value, "y");
         const distance = Math.abs(event.clientY - rect.top - y);
         if (distance < bestDistance) {
             bestDistance = distance;
@@ -227,6 +244,7 @@ function handleTraceSelectorClick(event) {
 }
 function renderSelectedTrace() {
     const values = traces[selectedTraceIndex] ?? [];
+    const positions = positionTraces[selectedTraceIndex] ?? [];
     const texts = tokenTexts[selectedTraceIndex] ?? [];
     const stats = confidenceStats(values);
     selectedTrace.textContent = String(selectedTraceIndex);
@@ -254,10 +272,11 @@ function renderSelectedTrace() {
         const confidence = values[tokenIndex];
         if (confidence === undefined)
             continue;
+        const position = positions[tokenIndex];
         const span = document.createElement("span");
         span.className = "token";
         span.style.backgroundColor = confidenceColor(confidence);
-        span.title = `token ${tokenIndex} · confidence ${formatConfidence(confidence)}`;
+        span.title = `token ${tokenIndex} · confidence ${formatConfidence(confidence)} · position ${formatConfidence(position)}`;
         span.textContent = texts[tokenIndex] ?? "";
         completion.appendChild(span);
     }
@@ -297,6 +316,7 @@ function scheduleUpdate(immediate = false) {
 }
 function resetView() {
     traces = emptyTraceNumbers();
+    positionTraces = emptyTraceNumbers();
     tokenTexts = emptyTraceTexts();
     finalResults = [];
     selectedTraceIndex = 0;
@@ -317,9 +337,12 @@ function applyEvent(event) {
     if (event.type === "token") {
         if (!traces[event.index])
             traces[event.index] = [];
+        if (!positionTraces[event.index])
+            positionTraces[event.index] = [];
         if (!tokenTexts[event.index])
             tokenTexts[event.index] = [];
         traces[event.index].push(event.confidence);
+        positionTraces[event.index].push(event.position);
         tokenTexts[event.index].push(event.text);
         scheduleUpdate();
         return;
@@ -327,10 +350,13 @@ function applyEvent(event) {
     if (event.type === "final") {
         if (!traces[event.index])
             traces[event.index] = [];
+        if (!positionTraces[event.index])
+            positionTraces[event.index] = [];
         if (!tokenTexts[event.index])
             tokenTexts[event.index] = [];
         finalResults[event.index] = event;
         traces[event.index] = event.token_confidences;
+        positionTraces[event.index] = event.token_positions;
         if (event.index === selectedTraceIndex) {
             renderedTraceIndex = -1;
         }
@@ -339,6 +365,7 @@ function applyEvent(event) {
     }
     finalResults = event.completions;
     traces = event.completions.map((result) => result.token_confidences);
+    positionTraces = event.completions.map((result) => result.token_positions);
     renderedTraceIndex = -1;
     scheduleUpdate(true);
     setStatus(`Done: ${event.completions.length} traces`);

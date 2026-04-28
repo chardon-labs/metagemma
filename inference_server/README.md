@@ -5,16 +5,17 @@ FastAPI inference server and dashboard for confidence-aware generation.
 The server loads:
 
 - base model from `../project_settings.json`
-- adapter/tokenizer/confidence row from `../project_settings.json` `output_dir`
-- confidence token/token id from `../project_settings.json`
+- adapter/tokenizer/confidence row/position row from `../project_settings.json` `output_dir`
+- confidence and position token ids from `../project_settings.json`
 
 The confidence for each generated token is computed before sampling:
 
 ```python
 confidence = sigmoid(logits[:, 6])
+position = sigmoid(logits[:, 7])
 ```
 
-Token id `6` is then suppressed before choosing the next generated token.
+Token ids `6` and `7` are then suppressed before choosing the next generated token.
 
 Sampling is deterministic by default. `INFERENCE_SEED` defaults to `42`, and each
 request may also pass a `seed` field. The same prompt and sampling settings
@@ -72,6 +73,7 @@ Set `n` greater than `1` to sample multiple completions from the same rendered p
   "completion": "...",
   "confidence": 0.91,
   "token_confidences": [0.82, 0.91],
+  "token_positions": [0.02, 0.04],
   "token_ids": [123, 456],
   "confidence_summary": {"final": 0.91, "mean": 0.865, "tail10_mean": 0.865},
   "finish_reason": "stop",
@@ -81,6 +83,7 @@ Set `n` greater than `1` to sample multiple completions from the same rendered p
       "completion": "...",
       "confidence": 0.91,
       "token_confidences": [0.82, 0.91],
+      "token_positions": [0.02, 0.04],
       "token_ids": [123, 456],
       "confidence_summary": {"final": 0.91, "mean": 0.865, "tail10_mean": 0.865},
       "finish_reason": "stop"
@@ -98,13 +101,13 @@ POST /complete/stream
 It returns newline-delimited JSON. Token events arrive as:
 
 ```json
-{"type":"token","index":0,"token_id":123,"text":" answer","confidence":0.82}
+{"type":"token","index":0,"token_id":123,"text":" answer","confidence":0.82,"position":0.02}
 ```
 
 Each completion emits a final event:
 
 ```json
-{"type":"final","index":0,"completion":"...","confidence":0.91,"token_confidences":[0.82,0.91],"token_ids":[123,456],"confidence_summary":{"final":0.91,"mean":0.865,"tail10_mean":0.865},"finish_reason":"stop"}
+{"type":"final","index":0,"completion":"...","confidence":0.91,"token_confidences":[0.82,0.91],"token_positions":[0.02,0.04],"token_ids":[123,456],"confidence_summary":{"final":0.91,"mean":0.865,"tail10_mean":0.865},"finish_reason":"stop"}
 ```
 
 The stream ends with `{"type":"batch_final","completions":[...]}`.
