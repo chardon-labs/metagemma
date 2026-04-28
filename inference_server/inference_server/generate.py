@@ -14,6 +14,7 @@ from inference_server.settings import (
     CONFIDENCE_TOKEN,
     CONFIDENCE_TOKEN_ID,
     ENABLE_THINKING,
+    INFERENCE_SEED,
     MAX_NEW_TOKENS,
     REPETITION_PENALTY,
     TEMPERATURE,
@@ -36,6 +37,7 @@ class GenerateRequest:
     repetition_penalty: float = REPETITION_PENALTY
     enable_thinking: bool = ENABLE_THINKING
     n: int = 1
+    seed: int = INFERENCE_SEED
 
 
 @dataclass(frozen=True)
@@ -154,7 +156,12 @@ def _top_p_filter(logits: torch.Tensor, top_p: float) -> torch.Tensor:
     return logits.masked_fill(remove_mask, -torch.inf)
 
 
-def _sample_next_token(logits: torch.Tensor, temperature: float, top_p: float) -> torch.Tensor:
+def _sample_next_token(
+    logits: torch.Tensor,
+    temperature: float,
+    top_p: float,
+    generator: torch.Generator,
+) -> torch.Tensor:
     if temperature == 0.0:
         return torch.argmax(logits, dim=-1)
     if temperature < 0.0:
@@ -163,7 +170,7 @@ def _sample_next_token(logits: torch.Tensor, temperature: float, top_p: float) -
     scaled = logits / temperature
     filtered = _top_p_filter(scaled, top_p)
     probs = F.softmax(filtered.float(), dim=-1)
-    return torch.multinomial(probs, num_samples=1).squeeze(-1)
+    return torch.multinomial(probs, num_samples=1, generator=generator).squeeze(-1)
 
 
 def stop_token_ids(tokenizer: PreTrainedTokenizerBase) -> set[int]:
@@ -211,6 +218,8 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
         raise ValueError("n must be positive.")
 
     tokenizer = loaded.tokenizer
+    generator = torch.Generator(device=loaded.device)
+    generator.manual_seed(request.seed)
     prompt = render_prompt(tokenizer, request)
     encoded = tokenizer(prompt, return_tensors="pt", add_special_tokens=False)
     input_ids = cast(torch.Tensor, encoded["input_ids"]).to(loaded.device).repeat(request.n, 1)
@@ -254,7 +263,7 @@ def generate_confidence_stream(loaded: LoadedConfidenceModel, request: GenerateR
                     request.repetition_penalty,
                 )
 
-            next_token = _sample_next_token(sampling_logits, request.temperature, request.top_p)
+            next_token = _sample_next_token(sampling_logits, request.temperature, request.top_p, generator)
             confidence_values = [float(value) for value in confidence.tolist()]
             next_token_ids = [int(token_id) for token_id in next_token.tolist()]
             next_column = torch.full(

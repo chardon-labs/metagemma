@@ -27,6 +27,8 @@ class ProjectSettings(TypedDict):
     tokenizer_id: str
     confidence_token: str
     confidence_token_id: int
+    position_token: str
+    position_token_id: int
     trace_dir: str
     output_dir: str
 
@@ -42,6 +44,8 @@ DEFAULT_OUTPUT_DIR = str(REPO_ROOT / PROJECT_SETTINGS["output_dir"])
 DEFAULT_TRACE_DIR = str(REPO_ROOT / PROJECT_SETTINGS["trace_dir"])
 CONFIDENCE_TOKEN = PROJECT_SETTINGS["confidence_token"]
 CONFIDENCE_TOKEN_ID = PROJECT_SETTINGS["confidence_token_id"]
+POSITION_TOKEN = PROJECT_SETTINGS["position_token"]
+POSITION_TOKEN_ID = PROJECT_SETTINGS["position_token_id"]
 MATH_PARSE_TIMEOUT_SECONDS = 2
 MATH_VERIFY_TIMEOUT_SECONDS = 2
 
@@ -164,6 +168,14 @@ def verify_confidence_token(tokenizer: PreTrainedTokenizerBase) -> None:
     if token_id != CONFIDENCE_TOKEN_ID:
         raise ValueError(
             f"{CONFIDENCE_TOKEN} resolved to token id {token_id}, expected {CONFIDENCE_TOKEN_ID}."
+        )
+
+
+def verify_position_token(tokenizer: PreTrainedTokenizerBase) -> None:
+    token_id = tokenizer.convert_tokens_to_ids(POSITION_TOKEN)
+    if token_id != POSITION_TOKEN_ID:
+        raise ValueError(
+            f"{POSITION_TOKEN} resolved to token id {token_id}, expected {POSITION_TOKEN_ID}."
         )
 
 

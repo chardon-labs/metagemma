@@ -24,10 +24,12 @@ from confidence_trace import (
     DEFAULT_OUTPUT_DIR,
     DEFAULT_TOKENIZER_ID,
     DEFAULT_TRACE_DIR,
+    POSITION_TOKEN_ID,
     configure_logging,
     load_manifest,
     read_trace_metadata,
     verify_confidence_token,
+    verify_position_token,
 )
 
 
@@ -42,12 +44,14 @@ EVAL_BATCH_SIZE = 1
 GRADIENT_ACCUMULATION_STEPS = 16
 LEARNING_RATE = 5e-5
 CONFIDENCE_LEARNING_RATE = 5e-4
+POSITION_LEARNING_RATE = 5e-4
 WEIGHT_DECAY = 0.0
 EPOCHS = 1.0
 MAX_STEPS = 0
 WARMUP_STEPS = 0
 KL_WEIGHT = 1.0
 BCE_WEIGHT = 1.0
+POSITION_WEIGHT = 0.25
 SEED = 42
 LOG_EVERY_STEPS = 10
 EVAL_EVERY_STEPS = 100
@@ -77,12 +81,14 @@ class FinetuneConfig:
     gradient_accumulation_steps: int = GRADIENT_ACCUMULATION_STEPS
     learning_rate: float = LEARNING_RATE
     confidence_learning_rate: float = CONFIDENCE_LEARNING_RATE
+    position_learning_rate: float = POSITION_LEARNING_RATE
     weight_decay: float = WEIGHT_DECAY
     epochs: float = EPOCHS
     max_steps: int = MAX_STEPS
     warmup_steps: int = WARMUP_STEPS
     kl_weight: float = KL_WEIGHT
     bce_weight: float = BCE_WEIGHT
+    position_weight: float = POSITION_WEIGHT
     seed: int = SEED
     log_every_steps: int = LOG_EVERY_STEPS
     eval_every_steps: int = EVAL_EVERY_STEPS
@@ -353,6 +359,7 @@ def collate_trace_batch(samples: list[dict[str, Any]], *, pad_token_id: int) -> 
     teacher_logprobs = torch.full((len(samples), max_target_len, logprobs_k), -torch.inf, dtype=torch.float32)
     teacher_mask = torch.zeros((len(samples), max_target_len, logprobs_k), dtype=torch.bool)
     labels = torch.zeros((len(samples), max_target_len), dtype=torch.float32)
+    position_labels = torch.zeros((len(samples), max_target_len), dtype=torch.float32)
 
     for batch_index, sample in enumerate(samples):
         prompt_ids = sample["prompt_token_ids"].astype(np.int64, copy=False)
@@ -376,6 +383,10 @@ def collate_trace_batch(samples: list[dict[str, Any]], *, pad_token_id: int) -> 
         )
         teacher_mask[batch_index, :target_len] = torch.from_numpy(sample["top_logprob_mask"])
         labels[batch_index, :target_len] = float(sample["math_verify_label"])
+        if target_len == 1:
+            position_labels[batch_index, 0] = 0.0
+        else:
+            position_labels[batch_index, :target_len] = torch.linspace(0.0, 1.0, target_len)
 
     return {
         "input_ids": input_ids,
@@ -386,6 +397,7 @@ def collate_trace_batch(samples: list[dict[str, Any]], *, pad_token_id: int) -> 
         "teacher_logprobs": teacher_logprobs,
         "teacher_mask": teacher_mask,
         "labels": labels,
+        "position_labels": position_labels,
     }
 
 
@@ -510,9 +522,11 @@ def compute_loss(
     *,
     model: nn.Module,
     confidence_row: nn.Parameter,
+    position_row: nn.Parameter,
     batch: dict[str, torch.Tensor],
     kl_weight: float,
     bce_weight: float,
+    position_weight: float,
 ) -> tuple[torch.Tensor, dict[str, float], ConfidenceMetricBatch]:
     input_ids = batch["input_ids"]
     attention_mask = batch["attention_mask"]
@@ -522,6 +536,7 @@ def compute_loss(
     teacher_logprobs = batch["teacher_logprobs"]
     teacher_mask = batch["teacher_mask"]
     labels = batch["labels"]
+    position_labels = batch["position_labels"]
 
     full_hidden = forward_last_hidden_state(
         model=model,
@@ -530,15 +545,18 @@ def compute_loss(
     )
     hidden = selected_token_state(full_hidden, target_positions)
     confidence_logits = torch.matmul(hidden.float(), confidence_row.float())
+    position_logits = torch.matmul(hidden.float(), position_row.float())
 
     lm_head = cast(Any, model).get_output_embeddings()
     logits = lm_head(hidden)
+    teacher_mask = teacher_mask & (teacher_token_ids != CONFIDENCE_TOKEN_ID) & (teacher_token_ids != POSITION_TOKEN_ID)
     valid_teacher_tokens = teacher_mask.any(dim=-1)
     kl_token_mask = target_mask & valid_teacher_tokens
     safe_teacher_ids = teacher_token_ids.clamp_min(0)
 
     kl_logits = logits.clone()
     kl_logits[..., CONFIDENCE_TOKEN_ID] = torch.finfo(kl_logits.dtype).min
+    kl_logits[..., POSITION_TOKEN_ID] = torch.finfo(kl_logits.dtype).min
     student_logprobs = F.log_softmax(kl_logits, dim=-1)
     student_teacher_logprobs = torch.gather(student_logprobs, dim=-1, index=safe_teacher_ids)
 
@@ -557,10 +575,13 @@ def compute_loss(
 
     bce_per_token = F.binary_cross_entropy_with_logits(confidence_logits, labels, reduction="none")
     bce_loss = bce_per_token[target_mask].mean()
-    loss = kl_weight * kl_loss + bce_weight * bce_loss
+    position_probs = torch.sigmoid(position_logits)
+    position_mse = F.mse_loss(position_probs[target_mask], position_labels[target_mask])
+    loss = kl_weight * kl_loss + bce_weight * bce_loss + position_weight * position_mse
 
     with torch.no_grad():
         confidence_probs = torch.sigmoid(confidence_logits)
+        position_mae = torch.abs(position_probs[target_mask] - position_labels[target_mask]).mean()
         final_confidences = []
         tail_confidences = []
         final_labels = []
@@ -593,6 +614,8 @@ def compute_loss(
             "loss": float(loss.detach().cpu()),
             "kl": float(kl_loss.detach().cpu()),
             "bce": float(bce_loss.detach().cpu()),
+            "position_mse": float(position_mse.detach().cpu()),
+            "position_mae": float(position_mae.detach().cpu()),
             "conf_final": float(final_confidence_mean.detach().cpu()),
         }
         confidence_metric_batch = ConfidenceMetricBatch(
@@ -694,6 +717,7 @@ def evaluate(
     *,
     model: nn.Module,
     confidence_row: nn.Parameter,
+    position_row: nn.Parameter,
     dataloader: DataLoader[dict[str, torch.Tensor]],
     device: torch.device,
     config: FinetuneConfig,
@@ -704,9 +728,11 @@ def evaluate(
         loss, metrics, confidence_metrics = compute_loss(
             model=model,
             confidence_row=confidence_row,
+            position_row=position_row,
             batch=to_device(batch, device),
             kl_weight=config.kl_weight,
             bce_weight=config.bce_weight,
+            position_weight=config.position_weight,
         )
         del loss
         accumulator.update(metrics, confidence_metrics)
@@ -714,7 +740,12 @@ def evaluate(
     return accumulator.summary()
 
 
-def optimizer_groups(model: nn.Module, confidence_row: nn.Parameter, config: FinetuneConfig) -> list[dict[str, Any]]:
+def optimizer_groups(
+    model: nn.Module,
+    confidence_row: nn.Parameter,
+    position_row: nn.Parameter,
+    config: FinetuneConfig,
+) -> list[dict[str, Any]]:
     model_params = [param for param in model.parameters() if param.requires_grad]
     return [
         {
@@ -727,6 +758,11 @@ def optimizer_groups(model: nn.Module, confidence_row: nn.Parameter, config: Fin
             "lr": config.confidence_learning_rate,
             "weight_decay": 0.0,
         },
+        {
+            "params": [position_row],
+            "lr": config.position_learning_rate,
+            "weight_decay": 0.0,
+        },
     ]
 
 
@@ -735,6 +771,7 @@ def save_outputs(
     model: nn.Module,
     tokenizer: PreTrainedTokenizerBase,
     confidence_row: nn.Parameter,
+    position_row: nn.Parameter,
     config: FinetuneConfig,
 ) -> None:
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -742,8 +779,10 @@ def save_outputs(
     lm_head = model_any.get_output_embeddings()
     with torch.no_grad():
         lm_head.weight[CONFIDENCE_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
+        lm_head.weight[POSITION_TOKEN_ID].copy_(position_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
 
     torch.save(confidence_row.detach().cpu(), config.output_dir / "confidence_lm_head_row.pt")
+    torch.save(position_row.detach().cpu(), config.output_dir / "position_lm_head_row.pt")
     (config.output_dir / "confidence_sft_config.json").write_text(
         json.dumps(config_dict(config), indent=2, sort_keys=True),
         encoding="utf-8",
@@ -755,14 +794,16 @@ def save_outputs(
         lm_head = merged.get_output_embeddings()
         with torch.no_grad():
             lm_head.weight[CONFIDENCE_TOKEN_ID].copy_(confidence_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
+            lm_head.weight[POSITION_TOKEN_ID].copy_(position_row.to(lm_head.weight.device, dtype=lm_head.weight.dtype))
         merged.save_pretrained(config.output_dir)
     elif not config.use_peft or config.save_full_model:
         model_any.save_pretrained(config.output_dir)
     else:
         model_any.save_pretrained(config.output_dir)
         LOGGER.info(
-            "Saved PEFT adapter plus confidence_lm_head_row.pt. Copy that row into lm_head.weight[%s] when loading.",
+            "Saved PEFT adapter plus auxiliary lm_head rows. Copy rows into lm_head.weight[%s] and lm_head.weight[%s] when loading.",
             CONFIDENCE_TOKEN_ID,
+            POSITION_TOKEN_ID,
         )
 
 
@@ -779,6 +820,7 @@ def train() -> None:
         AutoTokenizer.from_pretrained(tokenizer_id, trust_remote_code=True, attn_implementation="flash_attention_2"),
     )
     verify_confidence_token(tokenizer)
+    verify_position_token(tokenizer)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -818,6 +860,7 @@ def train() -> None:
     LOGGER.info("lm_head/input embeddings tied: %s", tied)
     with torch.no_grad():
         lm_head.weight[CONFIDENCE_TOKEN_ID].zero_()
+        lm_head.weight[POSITION_TOKEN_ID].zero_()
 
     confidence_row = nn.Parameter(
         torch.zeros(
@@ -826,7 +869,14 @@ def train() -> None:
             dtype=lm_head.weight.dtype,
         )
     )
-    optimizer = torch.optim.AdamW(optimizer_groups(model, confidence_row, config))
+    position_row = nn.Parameter(
+        torch.zeros(
+            lm_head.weight.shape[1],
+            device=device,
+            dtype=lm_head.weight.dtype,
+        )
+    )
+    optimizer = torch.optim.AdamW(optimizer_groups(model, confidence_row, position_row, config))
 
     total_update_steps = (
         config.max_steps
@@ -849,9 +899,11 @@ def train() -> None:
             loss, metrics, confidence_metrics = compute_loss(
                 model=model,
                 confidence_row=confidence_row,
+                position_row=position_row,
                 batch=to_device(batch, device),
                 kl_weight=config.kl_weight,
                 bce_weight=config.bce_weight,
+                position_weight=config.position_weight,
             )
             (loss / config.gradient_accumulation_steps).backward()
             running.update(metrics, confidence_metrics)
@@ -871,6 +923,7 @@ def train() -> None:
                 averaged = running.summary()
                 averaged["learning_rate"] = float(scheduler.get_last_lr()[0])
                 averaged["confidence_learning_rate"] = float(scheduler.get_last_lr()[1])
+                averaged["position_learning_rate"] = float(scheduler.get_last_lr()[2])
                 log_metrics(wandb_run, averaged, step=global_step, prefix="train")
                 running.reset()
                 running_count = 0
@@ -879,6 +932,7 @@ def train() -> None:
                 eval_metrics = evaluate(
                     model=model,
                     confidence_row=confidence_row,
+                    position_row=position_row,
                     dataloader=eval_loader,
                     device=device,
                     config=config,
@@ -896,6 +950,7 @@ def train() -> None:
         eval_metrics = evaluate(
             model=model,
             confidence_row=confidence_row,
+            position_row=position_row,
             dataloader=eval_loader,
             device=device,
             config=config,
@@ -906,6 +961,7 @@ def train() -> None:
         model=model,
         tokenizer=tokenizer,
         confidence_row=confidence_row,
+        position_row=position_row,
         config=config,
     )
 

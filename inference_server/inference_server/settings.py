@@ -34,9 +34,10 @@ TEMPERATURE = 1.0
 TOP_P = 0.95
 REPETITION_PENALTY = 1.0
 ENABLE_THINKING = True
+INFERENCE_SEED = int(os.environ.get("INFERENCE_SEED", "42"))
 
 HOST = os.environ.get("INFERENCE_HOST", "127.0.0.1")
-PORT = 8010
+PORT = int(os.environ.get("INFERENCE_PORT", "8010"))
 AUTH_TOKEN = os.environ.get("INFERENCE_AUTH_TOKEN") or None
 
 TorchDTypeName = Literal["auto", "float16", "bfloat16", "float32"]

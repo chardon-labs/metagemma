@@ -28,7 +28,16 @@ from inference_server.generate import (
     async_generate_confidence_stream,
 )
 from inference_server.model_loader import LoadedConfidenceModel, load_confidence_model
-from inference_server.settings import AUTH_TOKEN, HOST, MAX_NEW_TOKENS, PORT, REPETITION_PENALTY, TEMPERATURE, TOP_P
+from inference_server.settings import (
+    AUTH_TOKEN,
+    HOST,
+    INFERENCE_SEED,
+    MAX_NEW_TOKENS,
+    PORT,
+    REPETITION_PENALTY,
+    TEMPERATURE,
+    TOP_P,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -52,6 +61,7 @@ class CompletionRequestPayload(BaseModel):
     repetition_penalty: float = Field(default=REPETITION_PENALTY, gt=0.0)
     enable_thinking: bool = True
     n: int = Field(default=1, gt=0)
+    seed: int = Field(default=INFERENCE_SEED, ge=0)
 
 
 class ConfidenceSummaryPayload(BaseModel):
@@ -135,6 +145,7 @@ def _to_generate_request(payload: CompletionRequestPayload) -> GenerateRequest:
         repetition_penalty=payload.repetition_penalty,
         enable_thinking=payload.enable_thinking,
         n=payload.n,
+        seed=payload.seed,
     )
 
 

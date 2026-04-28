@@ -16,6 +16,10 @@ confidence = sigmoid(logits[:, 6])
 
 Token id `6` is then suppressed before choosing the next generated token.
 
+Sampling is deterministic by default. `INFERENCE_SEED` defaults to `42`, and each
+request may also pass a `seed` field. The same prompt and sampling settings
+produce the same completions for the same seed.
+
 ## Run
 
 ```bash
@@ -56,7 +60,8 @@ curl -s http://127.0.0.1:8010/complete \
     "temperature": 1.0,
     "top_p": 1,
     "enable_thinking": false,
-    "n": 1
+    "n": 1,
+    "seed": 42
   }'
 ```
 
