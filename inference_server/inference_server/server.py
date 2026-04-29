@@ -230,7 +230,7 @@ async def lifespan(_: FastAPI):
     MODEL = None
 
 
-app = FastAPI(title="Unicorn Mafia Confidence Serving", lifespan=lifespan)
+app = FastAPI(title="Confidence Serving", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

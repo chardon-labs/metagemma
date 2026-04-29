@@ -44,14 +44,7 @@ class CommandResult:
 class SandboxConfig:
     timeout_seconds: int = 30
     limits: CommandLimits = field(default_factory=CommandLimits)
-    env: Mapping[str, str] = field(
-        default_factory=lambda: {
-            "HOME": "/workspace",
-            "LANG": "C.UTF-8",
-            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "TMPDIR": "/tmp",
-        }
-    )
+    env: Mapping[str, str] = field(default_factory=lambda: _default_sandbox_env())
 
 
 class SandboxSession(Protocol):
@@ -96,6 +89,40 @@ def _apply_limits(limits: CommandLimits) -> None:
         resource.setrlimit(resource.RLIMIT_FSIZE, (limits.file_size_bytes, limits.file_size_bytes))
     if limits.process_count is not None:
         resource.setrlimit(resource.RLIMIT_NPROC, (limits.process_count, limits.process_count))
+
+
+def _default_sandbox_env() -> dict[str, str]:
+    path_entries = [
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+    ]
+    host_path = os.environ.get("PATH")
+    if host_path:
+        path_entries.extend(host_path.split(":"))
+
+    deduped_path_entries: list[str] = []
+    seen: set[str] = set()
+    for entry in path_entries:
+        if not entry or entry in seen:
+            continue
+        seen.add(entry)
+        deduped_path_entries.append(entry)
+
+    env = {
+        "HOME": "/workspace",
+        "LANG": "C.UTF-8",
+        "PATH": ":".join(deduped_path_entries),
+        "PYTHONPATH": "/workspace",
+        "TMPDIR": "/tmp",
+    }
+    proot_no_seccomp = os.environ.get("PROOT_NO_SECCOMP")
+    if proot_no_seccomp:
+        env["PROOT_NO_SECCOMP"] = proot_no_seccomp
+    return env
 
 
 def _write_initial_files(workspace: Path, initial_files: Mapping[str, str] | None) -> None:
@@ -334,12 +361,11 @@ class ProotSession(_BaseSession):
             "-r",
             str(self._rootfs),
             "-b",
-            f"{self.workspace}:{self._mount_path}",
+            f"{self.workspace}:{self._mount_path}!",
             "-w",
             str(PurePosixPath(cwd)),
-            "--kill-on-exit",
-            *argv,
         ]
+        command.extend(argv)
         return _run_subprocess(
             command,
             env=self._env(env),

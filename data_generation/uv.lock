@@ -13,6 +13,11 @@ resolution-markers = [
 ]
 
 [[package]]
+name = "agent-sandbox-harness"
+version = "0.1.0"
+source = { editable = "../sandbox_harness" }
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.1"
 source = { registry = "https://pypi.org/simple" }
@@ -460,6 +465,32 @@ dependencies = [
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/af/f3/6b032a554019cfb3447e671798c1bd3e79b5f1af20d10253f56cea269ef2/cuda_python-12.9.4-py3-none-any.whl", hash = "sha256:d2cacea882a69863f1e7d27ee71d75f0684f4c76910aff839067e4f89c902279", size = 7594, upload-time = "2025-10-21T14:55:12.846Z" },
+]
+
+[[package]]
+name = "data-generation"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "agent-sandbox-harness" },
+    { name = "datasets" },
+    { name = "math-verify" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "transformers" },
+    { name = "vllm" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-sandbox-harness", editable = "../sandbox_harness" },
+    { name = "datasets", specifier = ">=4.4.1" },
+    { name = "math-verify", specifier = ">=0.9.0" },
+    { name = "numpy", specifier = ">=2.0.0" },
+    { name = "pyarrow", specifier = ">=22.0.0" },
+    { name = "transformers", specifier = ">=5.5.1,<6" },
+    { name = "vllm", marker = "sys_platform != 'linux'", specifier = ">=0.17.0" },
+    { name = "vllm", marker = "sys_platform == 'linux'", specifier = ">=0.17.0", index = "https://pypi.org/simple" },
 ]
 
 [[package]]
@@ -3191,30 +3222,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254, upload-time = "2026-04-24T15:22:08.651Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321, upload-time = "2026-04-24T15:22:05.876Z" },
-]
-
-[[package]]
-name = "unicorn-mafia-data-generation"
-version = "0.1.0"
-source = { virtual = "." }
-dependencies = [
-    { name = "datasets" },
-    { name = "math-verify" },
-    { name = "numpy" },
-    { name = "pyarrow" },
-    { name = "transformers" },
-    { name = "vllm" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "datasets", specifier = ">=4.4.1" },
-    { name = "math-verify", specifier = ">=0.9.0" },
-    { name = "numpy", specifier = ">=2.0.0" },
-    { name = "pyarrow", specifier = ">=22.0.0" },
-    { name = "transformers", specifier = ">=5.5.1,<6" },
-    { name = "vllm", marker = "sys_platform != 'linux'", specifier = ">=0.17.0" },
-    { name = "vllm", marker = "sys_platform == 'linux'", specifier = ">=0.17.0", index = "https://pypi.org/simple" },
 ]
 
 [[package]]

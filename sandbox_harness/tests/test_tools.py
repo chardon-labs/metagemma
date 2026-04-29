@@ -86,7 +86,7 @@ class ToolExecutorTest(unittest.TestCase):
             executor = ToolExecutor(session)
             result = executor.execute("1", "bash", {"command": "printf ok"})
             self.assertFalse(result.is_error)
-            self.assertEqual(session.commands, [("/bin/bash", "-lc", "printf ok")])
+            self.assertEqual(session.commands, [("bash", "-lc", "printf ok")])
 
 
 if __name__ == "__main__":

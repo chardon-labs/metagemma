@@ -1,9 +1,10 @@
 [project]
-name = "unicorn-mafia-data-generation"
+name = "data-generation"
 version = "0.1.0"
 description = "Trace generation for confidence fine-tuning."
 requires-python = ">=3.12,<3.14"
 dependencies = [
+    "agent-sandbox-harness",
     "datasets>=4.4.1",
     "math-verify>=0.9.0",
     "numpy>=2.0.0",
@@ -13,6 +14,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
+agent-sandbox-harness = { path = "../sandbox_harness", editable = true }
 vllm = [
     { index = "pypi", marker = "sys_platform == 'linux'" },
 ]

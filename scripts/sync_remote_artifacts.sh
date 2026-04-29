@@ -21,11 +21,20 @@ RSYNC_SSH="ssh -i '$SSH_KEY' -o IdentitiesOnly=yes -p '$REMOTE_PORT'"
 
 sync_artifact_dir() {
   local remote_relative_dir="$1"
+  local required="${2:-required}"
   local local_dir="$LOCAL_ARTIFACT_ROOT/$remote_relative_dir"
   local remote_dir="${REMOTE_DIR%/}/$remote_relative_dir"
 
+  echo "Syncing $remote_dir -> $local_dir"
   mkdir -p "$local_dir"
-  ssh "${SSH_ARGS[@]}" "$REMOTE_HOST" "test -d '$remote_dir'"
+  if ! ssh "${SSH_ARGS[@]}" "$REMOTE_HOST" "test -d '$remote_dir'"; then
+    if [[ "$required" == "optional" ]]; then
+      echo "Skipping missing optional remote artifact dir: $remote_dir"
+      return
+    fi
+    echo "Missing required remote artifact dir: $remote_dir" >&2
+    return 1
+  fi
   rsync -az --progress \
     -e "$RSYNC_SSH" \
     "$REMOTE_HOST:$remote_dir/" \
@@ -33,6 +42,7 @@ sync_artifact_dir() {
 }
 
 sync_artifact_dir "$REMOTE_TRACE_DIR"
-sync_artifact_dir "$REMOTE_OUTPUT_DIR"
+sync_artifact_dir "$REMOTE_OUTPUT_DIR" optional
+sync_artifact_dir "traces/coding-agent-traces" optional
 
 echo "Synced remote artifacts into $LOCAL_ARTIFACT_ROOT"

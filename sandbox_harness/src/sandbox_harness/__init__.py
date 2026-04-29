@@ -20,11 +20,7 @@ from sandbox_harness.runner import (
     VerifyEpisode,
 )
 from sandbox_harness.serialization import (
-    NativeToolCall,
-    NativeToolResponse,
     render_gemma_chat,
-    scan_native_tool_calls,
-    scan_native_tool_responses,
 )
 from sandbox_harness.tools import (
     ACTIVE_TOOL_NAMES,
@@ -52,8 +48,6 @@ __all__ = [
     "GenerateAgentTurn",
     "JsonObject",
     "JsonValue",
-    "NativeToolCall",
-    "NativeToolResponse",
     "OpenAIFunctionTool",
     "PiPromptPaths",
     "ProotBackend",
@@ -71,7 +65,5 @@ __all__ = [
     "pi_function_tools",
     "python_repo_initial_files",
     "render_gemma_chat",
-    "scan_native_tool_calls",
-    "scan_native_tool_responses",
     "toy_addition_task",
 ]

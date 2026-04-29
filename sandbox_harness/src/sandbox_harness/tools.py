@@ -208,7 +208,7 @@ class ToolExecutor:
         command = json_string(arguments.get("command"), name="command")
         timeout = optional_json_int(arguments.get("timeout"), name="timeout")
         result = self.session.run(
-            ["/bin/bash", "-lc", command],
+            ["bash", "-lc", command],
             cwd=PurePosixPath("/workspace"),
             timeout_seconds=timeout,
         )
