@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
 import numpy as np
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
-from vllm import LLM, SamplingParams
+from vllm import AsyncEngineArgs, AsyncLLMEngine, SamplingParams
 
 from confidence_trace import (
     CONFIDENCE_TOKEN_ID,
@@ -42,8 +43,7 @@ SEED = 44
 NUM_GENERATIONS = 1
 SFT_THINKING_FRACTION_NUMERATOR = 2
 SFT_THINKING_FRACTION_DENOMINATOR = 3
-MAX_SEQUENCE_LENGTH = 4096
-MAX_TOKENS = 2048
+MAX_SEQUENCE_LENGTH = 32768
 ENABLE_THINKING = True
 LOGPROBS_K = 20
 TEMPERATURE = 1.0
@@ -55,7 +55,6 @@ ModelDType = Literal["auto", "half", "float16", "bfloat16", "float", "float32"]
 ProblemKey = tuple[str, str, str, str, str, str]
 DTYPE: ModelDType = "auto"
 TENSOR_PARALLEL_SIZE = 1
-MAX_PROMPTS_PER_GENERATE: int | None = None
 SHARD_SIZE = 512
 SKIP_EVAL_GENERATION = False
 APPEND = False
@@ -69,7 +68,6 @@ class GenerateTraceConfig:
     seed: int = SEED
     num_generations: int = NUM_GENERATIONS
     max_sequence_length: int = MAX_SEQUENCE_LENGTH
-    max_tokens: int = MAX_TOKENS
     enable_thinking: bool = ENABLE_THINKING
     logprobs_k: int = LOGPROBS_K
     temperature: float = TEMPERATURE
@@ -79,44 +77,52 @@ class GenerateTraceConfig:
     gpu_memory_utilization: float = GPU_MEMORY_UTILIZATION
     dtype: ModelDType = DTYPE
     tensor_parallel_size: int = TENSOR_PARALLEL_SIZE
-    max_prompts_per_generate: int | None = MAX_PROMPTS_PER_GENERATE
     shard_size: int = SHARD_SIZE
     skip_eval_generation: bool = SKIP_EVAL_GENERATION
     append: bool = APPEND
 
 
-def prompt_batches(
-    items: Sequence[Mapping[str, Any]],
-    max_prompts_per_generate: int | None,
-) -> Iterable[Sequence[Mapping[str, Any]]]:
-    if max_prompts_per_generate is None:
-        yield items
-        return
-    if max_prompts_per_generate <= 0:
-        raise ValueError("max_prompts_per_generate must be positive when set.")
-
-    for start in range(0, len(items), max_prompts_per_generate):
-        yield items[start : start + max_prompts_per_generate]
-
-
-def hit_generation_token_limit(finish_reason: str | None, *, token_count: int, max_tokens: int) -> bool:
+def hit_generation_token_limit(
+    finish_reason: str | None,
+    *,
+    token_count: int,
+    completion_token_budget: int,
+) -> bool:
     if finish_reason == "length":
         return True
-    return finish_reason is None and token_count >= max_tokens
+    return finish_reason is None and token_count >= completion_token_budget
 
 
-def make_sampling_params(config: GenerateTraceConfig, *, max_tokens: int) -> SamplingParams:
+def make_sampling_params(config: GenerateTraceConfig, *, completion_token_budget: int) -> SamplingParams:
     return SamplingParams(
         n=config.num_generations,
         temperature=config.temperature,
         top_p=config.top_p,
         top_k=config.top_k,
         repetition_penalty=config.repetition_penalty,
-        max_tokens=max_tokens,
+        max_tokens=completion_token_budget,
         logprobs=config.logprobs_k,
         seed=config.seed,
         logit_bias={CONFIDENCE_TOKEN_ID: -100.0},
     )
+
+
+@dataclass(frozen=True)
+class TracePromptRequest:
+    request_index: int
+    request_id: str
+    split: str
+    problem: dict[str, Any]
+    prompt_text: str
+    prompt_ids: np.ndarray
+    completion_token_budget: int
+    enable_thinking: bool
+
+
+@dataclass(frozen=True)
+class TraceRequestResult:
+    request: TracePromptRequest
+    output: Any
 
 
 class TraceShardBuilder:
@@ -270,24 +276,16 @@ class TraceShardBuilder:
         self.top_mask_arrays = []
 
 
-def build_prompts(
+def build_prompt_request(
     *,
     tokenizer: PreTrainedTokenizerBase,
-    split: str,
-    problems: Sequence[Mapping[str, Any]],
+    problem: Mapping[str, Any],
     enable_thinking: bool,
-) -> tuple[list[str], list[np.ndarray], list[dict[str, Any]]]:
-    prompt_texts: list[str] = []
-    prompt_ids: list[np.ndarray] = []
-    prompt_records: list[dict[str, Any]] = []
-    for problem in problems:
-        messages = format_prompt(str(problem["user_prompt"]), system_prompt=str(problem["system_prompt"]))
-        prompt_text = apply_chat_template(tokenizer, messages, enable_thinking=enable_thinking)
-        ids = prompt_token_ids(tokenizer, prompt_text)
-        prompt_texts.append(prompt_text)
-        prompt_ids.append(ids)
-        prompt_records.append({"split": split, "problem": dict(problem), "prompt_text": prompt_text})
-    return prompt_texts, prompt_ids, prompt_records
+) -> tuple[dict[str, Any], str, np.ndarray]:
+    messages = format_prompt(str(problem["user_prompt"]), system_prompt=str(problem["system_prompt"]))
+    prompt_text = apply_chat_template(tokenizer, messages, enable_thinking=enable_thinking)
+    ids = prompt_token_ids(tokenizer, prompt_text)
+    return dict(problem), prompt_text, ids
 
 
 def completion_logprob_arrays(
@@ -317,129 +315,255 @@ def completion_logprob_arrays(
     return np.stack(token_ids), np.stack(values), np.stack(masks)
 
 
-def generate_split(
+def generation_config_payload(
     *,
-    llm: LLM,
-    tokenizer: PreTrainedTokenizerBase,
     config: GenerateTraceConfig,
-    builder: TraceShardBuilder,
-    split: str,
-    problems: Sequence[Mapping[str, Any]],
     enable_thinking: bool,
-) -> None:
-    generation_config = {
+) -> dict[str, Any]:
+    return {
         "model_id": config.model_id,
         "tokenizer_id": config.tokenizer_id or config.model_id,
         "generation_seed": config.seed,
         "temperature": config.temperature,
         "top_p": config.top_p,
         "top_k": config.top_k,
-        "configured_max_tokens": config.max_tokens,
         "max_sequence_length": config.max_sequence_length,
         "enable_thinking": enable_thinking,
         "logprobs_k": config.logprobs_k,
         "forbidden_token_id": CONFIDENCE_TOKEN_ID,
     }
 
-    if config.max_prompts_per_generate is None:
-        LOGGER.info("Submitting all %s %s prompts to vLLM in one generate call", len(problems), split)
-    else:
-        LOGGER.info(
-            "Submitting %s %s prompts to vLLM in chunks of %s",
-            len(problems),
-            split,
-            config.max_prompts_per_generate,
+
+def make_trace_prompt_request(
+    *,
+    tokenizer: PreTrainedTokenizerBase,
+    config: GenerateTraceConfig,
+    split: str,
+    problem: Mapping[str, Any],
+    enable_thinking: bool,
+    request_index: int,
+) -> TracePromptRequest | None:
+    problem_record, prompt_text, ids = build_prompt_request(
+        tokenizer=tokenizer,
+        problem=problem,
+        enable_thinking=enable_thinking,
+    )
+    prompt_length = int(ids.shape[0])
+    completion_token_budget = config.max_sequence_length - prompt_length
+    if completion_token_budget <= 0:
+        LOGGER.warning(
+            "Skipping over-length prompt for problem_id=%s prompt_length=%s max_sequence_length=%s",
+            problem_record["problem_id"],
+            prompt_length,
+            config.max_sequence_length,
         )
+        return None
 
-    for problem_batch in prompt_batches(problems, config.max_prompts_per_generate):
-        prompt_texts, prompt_ids, prompt_records = build_prompts(
-            tokenizer=tokenizer,
-            split=split,
-            problems=problem_batch,
-            enable_thinking=enable_thinking,
-        )
-        valid_prompt_texts: list[str] = []
-        valid_prompt_ids: list[np.ndarray] = []
-        valid_prompt_records: list[dict[str, Any]] = []
-        sampling_params: list[SamplingParams] = []
-        prompt_max_tokens: list[int] = []
-        for prompt_text, ids, record in zip(prompt_texts, prompt_ids, prompt_records, strict=True):
-            prompt_length = int(ids.shape[0])
-            remaining_tokens = config.max_sequence_length - prompt_length
-            if remaining_tokens <= 0:
-                LOGGER.warning(
-                    "Skipping over-length prompt for problem_id=%s prompt_length=%s max_sequence_length=%s",
-                    record["problem"]["problem_id"],
-                    prompt_length,
-                    config.max_sequence_length,
-                )
-                continue
+    request_id = f"{split}-{problem_record['problem_id']}-{request_index}"
+    return TracePromptRequest(
+        request_index=request_index,
+        request_id=request_id,
+        split=split,
+        problem=problem_record,
+        prompt_text=prompt_text,
+        prompt_ids=ids,
+        completion_token_budget=completion_token_budget,
+        enable_thinking=enable_thinking,
+    )
 
-            max_tokens = min(config.max_tokens, remaining_tokens)
-            valid_prompt_texts.append(prompt_text)
-            valid_prompt_ids.append(ids)
-            valid_prompt_records.append(record)
-            sampling_params.append(make_sampling_params(config, max_tokens=max_tokens))
-            prompt_max_tokens.append(max_tokens)
 
-        if not valid_prompt_texts:
+async def generate_request(
+    *,
+    engine: AsyncLLMEngine,
+    config: GenerateTraceConfig,
+    request: TracePromptRequest,
+) -> TraceRequestResult:
+    final_output: Any | None = None
+    async for request_output in engine.generate(
+        request.prompt_text,
+        make_sampling_params(config, completion_token_budget=request.completion_token_budget),
+        request.request_id,
+    ):
+        final_output = request_output
+    if final_output is None:
+        raise RuntimeError(f"vLLM returned no output for request_id={request.request_id}")
+    return TraceRequestResult(request=request, output=final_output)
+
+
+def record_request_result(
+    *,
+    builder: TraceShardBuilder,
+    config: GenerateTraceConfig,
+    result: TraceRequestResult,
+) -> None:
+    request = result.request
+    generation_config = generation_config_payload(config=config, enable_thinking=request.enable_thinking)
+    outputs = sorted(result.output.outputs, key=lambda output: output.index)
+    for completion in outputs:
+        completion_ids = np.asarray(completion.token_ids, dtype=np.int32)
+        if completion_ids.size == 0:
+            LOGGER.warning(
+                "Skipping empty completion for problem_id=%s sample_id=%s",
+                request.problem["problem_id"],
+                completion.index,
+            )
             continue
+        token_limited = hit_generation_token_limit(
+            completion.finish_reason,
+            token_count=int(completion_ids.shape[0]),
+            completion_token_budget=request.completion_token_budget,
+        )
+        if token_limited:
+            LOGGER.warning(
+                "Marking token-limited completion incorrect for problem_id=%s sample_id=%s token_length=%s completion_token_budget=%s",
+                request.problem["problem_id"],
+                completion.index,
+                int(completion_ids.shape[0]),
+                request.completion_token_budget,
+            )
+        top_token_ids, top_logprobs, top_mask = completion_logprob_arrays(
+            completion_logprobs=completion.logprobs,
+            token_count=int(completion_ids.shape[0]),
+            k=config.logprobs_k,
+        )
+        builder.add_completion(
+            split=request.split,
+            problem=request.problem,
+            prompt_text=request.prompt_text,
+            prompt_ids=request.prompt_ids,
+            sample_id=int(completion.index),
+            completion_text=completion.text,
+            completion_token_ids=completion_ids,
+            top_token_ids=top_token_ids,
+            top_logprobs=top_logprobs,
+            top_mask=top_mask,
+            finish_reason=completion.finish_reason,
+            stop_reason=completion.stop_reason,
+            generation_config={
+                **generation_config,
+                "completion_token_budget": request.completion_token_budget,
+            },
+            force_incorrect=token_limited,
+        )
 
-        request_outputs = llm.generate(valid_prompt_texts, sampling_params, use_tqdm=True)
-        for request_output, ids, record, max_tokens in zip(
-            request_outputs,
-            valid_prompt_ids,
-            valid_prompt_records,
-            prompt_max_tokens,
-            strict=True,
-        ):
-            outputs = sorted(request_output.outputs, key=lambda output: output.index)
-            for completion in outputs:
-                completion_ids = np.asarray(completion.token_ids, dtype=np.int32)
-                if completion_ids.size == 0:
-                    LOGGER.warning(
-                        "Skipping empty completion for problem_id=%s sample_id=%s",
-                        record["problem"]["problem_id"],
-                        completion.index,
-                    )
-                    continue
-                token_limited = hit_generation_token_limit(
-                    completion.finish_reason,
-                    token_count=int(completion_ids.shape[0]),
-                    max_tokens=max_tokens,
+
+async def record_completed_tasks(
+    *,
+    pending_tasks: set[asyncio.Task[TraceRequestResult]],
+    builder: TraceShardBuilder,
+    config: GenerateTraceConfig,
+    wait_for_one: bool,
+) -> int:
+    if not pending_tasks:
+        return 0
+
+    done, pending = await asyncio.wait(
+        pending_tasks,
+        timeout=None if wait_for_one else 0,
+        return_when=asyncio.FIRST_COMPLETED if wait_for_one else asyncio.ALL_COMPLETED,
+    )
+    pending_tasks.clear()
+    pending_tasks.update(pending)
+    for task in done:
+        record_request_result(builder=builder, config=config, result=task.result())
+    return len(done)
+
+
+async def generate_all_requests(
+    *,
+    engine: AsyncLLMEngine,
+    tokenizer: PreTrainedTokenizerBase,
+    config: GenerateTraceConfig,
+    builder: TraceShardBuilder,
+    split_items: Sequence[tuple[str, Sequence[Mapping[str, Any]], bool]],
+) -> None:
+    pending_tasks: set[asyncio.Task[TraceRequestResult]] = set()
+    next_request_index = 0
+    queued = 0
+    completed = 0
+    for split, problems, enable_thinking in split_items:
+        LOGGER.info(
+            "Queueing %s traces for %s problems with enable_thinking=%s",
+            split,
+            len(problems),
+            enable_thinking,
+        )
+        for problem in problems:
+            request = make_trace_prompt_request(
+                tokenizer=tokenizer,
+                config=config,
+                split=split,
+                problem=problem,
+                enable_thinking=enable_thinking,
+                request_index=next_request_index,
+            )
+            if request is None:
+                continue
+            next_request_index += 1
+            queued += 1
+            pending_tasks.add(asyncio.create_task(generate_request(engine=engine, config=config, request=request)))
+            if queued % 100 == 0:
+                await asyncio.sleep(0)
+                completed += await record_completed_tasks(
+                    pending_tasks=pending_tasks,
+                    builder=builder,
+                    config=config,
+                    wait_for_one=False,
                 )
-                if token_limited:
-                    LOGGER.warning(
-                        "Marking token-limited completion incorrect for problem_id=%s sample_id=%s token_length=%s max_tokens=%s",
-                        record["problem"]["problem_id"],
-                        completion.index,
-                        int(completion_ids.shape[0]),
-                        max_tokens,
-                    )
-                top_token_ids, top_logprobs, top_mask = completion_logprob_arrays(
-                    completion_logprobs=completion.logprobs,
-                    token_count=int(completion_ids.shape[0]),
-                    k=config.logprobs_k,
-                )
-                builder.add_completion(
-                    split=record["split"],
-                    problem=record["problem"],
-                    prompt_text=record["prompt_text"],
-                    prompt_ids=ids,
-                    sample_id=int(completion.index),
-                    completion_text=completion.text,
-                    completion_token_ids=completion_ids,
-                    top_token_ids=top_token_ids,
-                    top_logprobs=top_logprobs,
-                    top_mask=top_mask,
-                    finish_reason=completion.finish_reason,
-                    stop_reason=completion.stop_reason,
-                    generation_config={
-                        **generation_config,
-                        "max_tokens": max_tokens,
-                    },
-                    force_incorrect=token_limited,
-                )
+                if completed > 0 and completed % 100 == 0:
+                    LOGGER.info("Completed %s/%s queued prompts.", completed, queued)
+
+    LOGGER.info("Queued %s prompts to vLLM.", queued)
+    while pending_tasks:
+        completed += await record_completed_tasks(
+            pending_tasks=pending_tasks,
+            builder=builder,
+            config=config,
+            wait_for_one=True,
+        )
+        if completed % 100 == 0 or completed == queued:
+            LOGGER.info("Completed %s/%s queued prompts.", completed, queued)
+
+
+def make_async_engine(config: GenerateTraceConfig, *, tokenizer_id: str) -> AsyncLLMEngine:
+    return AsyncLLMEngine.from_engine_args(
+        AsyncEngineArgs(
+            model=config.model_id,
+            tokenizer=tokenizer_id,
+            trust_remote_code=True,
+            dtype=config.dtype,
+            gpu_memory_utilization=config.gpu_memory_utilization,
+            tensor_parallel_size=config.tensor_parallel_size,
+            max_model_len=config.max_sequence_length,
+        )
+    )
+
+
+async def run_generation_async(
+    *,
+    tokenizer: PreTrainedTokenizerBase,
+    tokenizer_id: str,
+    config: GenerateTraceConfig,
+    builder: TraceShardBuilder,
+    split_items: Sequence[tuple[str, Sequence[Mapping[str, Any]], bool]],
+) -> None:
+    engine = make_async_engine(config, tokenizer_id=tokenizer_id)
+    try:
+        await generate_all_requests(
+            engine=engine,
+            tokenizer=tokenizer,
+            config=config,
+            builder=builder,
+            split_items=split_items,
+        )
+    finally:
+        shutdown = getattr(engine, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
+            shutdown = getattr(engine, "shutdown_background_loop", None)
+            if callable(shutdown):
+                shutdown()
 
 
 def split_sft_thinking_groups(
@@ -611,15 +735,6 @@ def main() -> None:
     if not config.skip_eval_generation:
         split_items.append(("eval", eval_problems, config.enable_thinking))
 
-    llm = LLM(
-        model=config.model_id,
-        tokenizer=tokenizer_id,
-        trust_remote_code=True,
-        dtype=config.dtype,
-        gpu_memory_utilization=config.gpu_memory_utilization,
-        tensor_parallel_size=config.tensor_parallel_size,
-        max_model_len=config.max_sequence_length,
-    )
     builder = TraceShardBuilder(
         output_dir=config.output_dir,
         shard_size=config.shard_size,
@@ -628,22 +743,15 @@ def main() -> None:
         initial_row_id=initial_row_id,
     )
 
-    for split, problems, enable_thinking in split_items:
-        LOGGER.info(
-            "Generating %s traces for %s problems with enable_thinking=%s",
-            split,
-            len(problems),
-            enable_thinking,
-        )
-        generate_split(
-            llm=llm,
+    asyncio.run(
+        run_generation_async(
             tokenizer=tokenizer,
+            tokenizer_id=tokenizer_id,
             config=config,
             builder=builder,
-            split=split,
-            problems=problems,
-            enable_thinking=enable_thinking,
+            split_items=split_items,
         )
+    )
 
     builder.flush()
     write_manifest(
@@ -658,7 +766,6 @@ def main() -> None:
             eval_problem_count=previous_eval_problem_count
             + (0 if config.skip_eval_generation else len(eval_problems)),
             num_generations=config.num_generations,
-            max_tokens=config.max_tokens,
             max_sequence_length=config.max_sequence_length,
             enable_thinking=None,
             logprobs_k=config.logprobs_k,

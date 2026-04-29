@@ -67,10 +67,10 @@ class TraceManifest:
     sft_problem_count: int
     eval_problem_count: int
     num_generations: int
-    max_tokens: int
     logprobs_k: int
     forbidden_token_id: int
     shards: list[dict[str, str]]
+    max_tokens: int | None = None
     max_sequence_length: int | None = None
     enable_thinking: bool | None = None
     datasets: list[dict[str, Any]] | None = None
