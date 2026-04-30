@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # shellcheck source=scripts/remote_config.sh
 source "$SCRIPT_DIR/remote_config.sh"
+require_remote_connection_config
 
 ssh -i "$SSH_KEY" \
   -o IdentitiesOnly=yes \

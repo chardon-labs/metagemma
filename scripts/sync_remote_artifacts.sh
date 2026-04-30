@@ -6,6 +6,7 @@ REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/remote_config.sh
 source "$SCRIPT_DIR/remote_config.sh"
+require_remote_connection_config
 
 LOCAL_ARTIFACT_ROOT="$REPO_DIR/data"
 REMOTE_TRACE_DIR="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["trace_dir"])' "$REPO_DIR/project_settings.json")"
