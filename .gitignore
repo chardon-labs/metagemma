@@ -5,3 +5,5 @@ __pycache__/
 data/
 outputs/
 repos/
+scripts/remote_instance.sh
+scripts/remote_instance.sh.tmp.*
