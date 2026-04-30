@@ -19,6 +19,7 @@ dependencies = [
     "trl>=0.28.0",
     "unsloth[base]",
     "unsloth-zoo[base]",
+    "kernels>=0.13.0",
 ]
 
 [tool.uv]
