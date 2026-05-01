@@ -23,7 +23,9 @@ class PrintCallback:
         self.console.print(
             f"step={metrics.step} loss={metrics.loss:.4f} reward={metrics.reward_mean:.3f} "
             f"reward_std={metrics.reward_std:.3f} len={metrics.completion_length_mean:.1f} "
-            f"lr={metrics.learning_rate:.2e} ratio={metrics.mean_ratio:.3f} "
+            f"active_len={metrics.active_completion_length_mean:.1f} "
+            f"loss_seq={metrics.loss_sequence_fraction:.2f} "
+            f"lr={metrics.learning_rate:.2e} grad={metrics.grad_norm:.3f} ratio={metrics.mean_ratio:.3f} "
             f"clip={metrics.clip_ratio:.3f} {reward_parts}"
         )
 

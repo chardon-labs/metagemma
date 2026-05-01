@@ -13,19 +13,20 @@ dependencies = [
     "tokenizers",
     "torch>=2.8.0",
     "torchvision",
-    "transformers>=5.5.0,<6",
+    "transformers>=5.5.1,<6",
     "triton>=3.4.0",
     "triton-kernels",
     "trl>=0.28.0",
     "unsloth[base]",
     "unsloth-zoo[base]",
-    "kernels>=0.13.0",
+    "vllm==0.19.1",
 ]
 
 [tool.uv]
 package = false
 override-dependencies = [
     "trl>=0.28.0",
+    "transformers>=5.5.1,<6",
 ]
 
 [tool.uv.sources]

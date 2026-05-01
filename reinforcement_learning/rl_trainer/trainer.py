@@ -124,7 +124,8 @@ class RLTrainer:
                     loss=float(loss_output.loss.detach().cpu()),
                     reward_result=reward_result,
                     advantages=advantages.advantages,
-                    completion_mask=completion_mask,
+                    completion_mask=rollout.completion_mask,
+                    loss_mask=completion_mask,
                     mean_ratio=loss_output.mean_ratio,
                     clip_ratio=loss_output.clip_ratio,
                 )
@@ -134,7 +135,7 @@ class RLTrainer:
                 self.state.examples_seen += len(prompt_batch.examples)
 
             self._assert_finite_trainable_parameters("before optimizer step")
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
                 self.config.max_grad_norm,
                 error_if_nonfinite=True,
@@ -146,6 +147,7 @@ class RLTrainer:
             self.state.step += 1
             if self.config.empty_cache_steps is not None and self.state.step % self.config.empty_cache_steps == 0:
                 self._empty_cuda_cache()
+            self._sync_rollout_engine()
 
             if latest_metrics is not None and self._should_log():
                 latest_metrics = StepMetrics(
@@ -154,7 +156,10 @@ class RLTrainer:
                     reward_mean=latest_metrics.reward_mean,
                     reward_std=latest_metrics.reward_std,
                     completion_length_mean=latest_metrics.completion_length_mean,
+                    active_completion_length_mean=latest_metrics.active_completion_length_mean,
+                    loss_sequence_fraction=latest_metrics.loss_sequence_fraction,
                     learning_rate=self._learning_rate(),
+                    grad_norm=float(grad_norm.detach().cpu()),
                     mean_ratio=latest_metrics.mean_ratio,
                     clip_ratio=latest_metrics.clip_ratio,
                     reward_function_means=latest_metrics.reward_function_means,
@@ -241,6 +246,7 @@ class RLTrainer:
         reward_result: RewardResult,
         advantages: torch.Tensor,
         completion_mask: torch.Tensor,
+        loss_mask: torch.Tensor,
         mean_ratio: float,
         clip_ratio: float,
     ) -> StepMetrics:
@@ -249,13 +255,17 @@ class RLTrainer:
             for index, name in enumerate(reward_result.names)
         }
         lengths = completion_mask.sum(dim=1)
+        active_lengths = loss_mask.sum(dim=1)
         return StepMetrics(
             step=self.state.step,
             loss=loss,
             reward_mean=float(reward_result.total.mean().detach().cpu()),
             reward_std=float(reward_result.total.std().detach().cpu()),
             completion_length_mean=float(lengths.mean().detach().cpu()),
+            active_completion_length_mean=float(active_lengths.mean().detach().cpu()),
+            loss_sequence_fraction=float(active_lengths.gt(0).to(torch.float32).mean().detach().cpu()),
             learning_rate=self._learning_rate(),
+            grad_norm=0.0,
             mean_ratio=mean_ratio,
             clip_ratio=clip_ratio,
             reward_function_means=reward_function_means,
@@ -290,6 +300,12 @@ class RLTrainer:
 
     def _learning_rate(self) -> float:
         return float(cast(float, self.scheduler.get_last_lr()[0]))
+
+    def _sync_rollout_engine(self) -> None:
+        sync_after_optimizer_step = getattr(self.rollout_engine, "sync_after_optimizer_step", None)
+        if sync_after_optimizer_step is None:
+            return
+        sync_after_optimizer_step(model=self.model, tokenizer=self.tokenizer, step=self.state.step)
 
     def _assert_finite_trainable_parameters(self, location: str) -> None:
         for name, parameter in self.model.named_parameters():

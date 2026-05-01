@@ -88,7 +88,10 @@ class StepMetrics:
     reward_mean: float
     reward_std: float
     completion_length_mean: float
+    active_completion_length_mean: float
+    loss_sequence_fraction: float
     learning_rate: float
+    grad_norm: float
     mean_ratio: float
     clip_ratio: float
     reward_function_means: dict[str, float]
