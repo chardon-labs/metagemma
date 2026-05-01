@@ -6,7 +6,7 @@ import torch
 
 from rl_trainer.config import RLTrainerConfig
 from rl_trainer.tensors import completion_mask
-from rl_trainer.types import Completion, PromptBatch, RolloutBatch, TokenBatch
+from rl_trainer.types import Completion, PromptBatch, RolloutBatch, RolloutSyncStats, TokenBatch
 
 
 class TransformersRolloutEngine:
@@ -120,6 +120,7 @@ class VLLMRolloutEngine:
         self.sync_steps = sync_steps
         self.sync_chunk_bytes = sync_chunk_bytes
         self.sync_backend = sync_backend
+        self.last_sync_stats: RolloutSyncStats | None = None
         if self.sync_backend != "inprocess":
             raise ValueError(f"Unsupported vLLM sync backend: {self.sync_backend}")
         os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
@@ -194,7 +195,6 @@ class VLLMRolloutEngine:
         if step % self.sync_steps != 0:
             return
 
-        print(f"syncing_vllm_rollout_model step={step} backend={self.sync_backend}", flush=True)
         torch.cuda.synchronize()
         synced_tensors = 0
         synced_bytes = 0
@@ -204,10 +204,11 @@ class VLLMRolloutEngine:
             synced_bytes += sum(weight.numel() * weight.element_size() for _, weight in batch)
             loaded_tensors += self._update_vllm_weights_inprocess(batch)
         self.llm.reset_prefix_cache()
-        print(
-            "synced_vllm_rollout_model "
-            f"sent_tensors={synced_tensors} loaded_tensors={loaded_tensors} bytes={synced_bytes}",
-            flush=True,
+        self.last_sync_stats = RolloutSyncStats(
+            step=step,
+            synced_tensors=synced_tensors,
+            loaded_tensors=loaded_tensors,
+            synced_bytes=synced_bytes,
         )
 
     def _build_llm(self, model_name_or_path: str) -> Any:

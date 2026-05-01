@@ -28,6 +28,14 @@ class TokenBatch:
 
 
 @dataclass(frozen=True)
+class RolloutSyncStats:
+    step: int
+    synced_tensors: int
+    loaded_tensors: int
+    synced_bytes: int
+
+
+@dataclass(frozen=True)
 class RolloutBatch:
     prompt_ids: torch.Tensor
     prompt_attention_mask: torch.Tensor
@@ -86,6 +94,7 @@ class StepMetrics:
     learning_rate: float
     grad_norm: float
     reward_function_means: dict[str, float]
+    rollout_sync_stats: RolloutSyncStats | None = None
 
 
 @dataclass(frozen=True)

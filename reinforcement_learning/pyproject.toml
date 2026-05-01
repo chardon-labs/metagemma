@@ -8,6 +8,7 @@ dependencies = [
     "datasets",
     "numpy",
     "pillow",
+    "plotille",
     "safetensors",
     "timm",
     "tokenizers",

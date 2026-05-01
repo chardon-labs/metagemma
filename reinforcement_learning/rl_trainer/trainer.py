@@ -26,6 +26,7 @@ from rl_trainer.types import (
     RewardFunction,
     RewardResult,
     RolloutEngine,
+    RolloutSyncStats,
     SchedulerFactory,
     StepMetrics,
     TrainingExample,
@@ -201,6 +202,7 @@ class RLTrainer:
             learning_rate=self._learning_rate(),
             grad_norm=float(grad_norm.detach().cpu()),
             reward_function_means=latest_metrics.reward_function_means,
+            rollout_sync_stats=self._rollout_sync_stats(),
         )
         for callback in self.callbacks:
             callback.on_step_end(metrics)
@@ -312,6 +314,12 @@ class RLTrainer:
         if sync_after_optimizer_step is None:
             return
         sync_after_optimizer_step(model=self.model, tokenizer=self.tokenizer, step=self.state.step)
+
+    def _rollout_sync_stats(self) -> RolloutSyncStats | None:
+        stats = getattr(self.rollout_engine, "last_sync_stats", None)
+        if isinstance(stats, RolloutSyncStats):
+            return stats
+        return None
 
     def _close_callbacks(self) -> None:
         for callback in self.callbacks:

@@ -1,19 +1,21 @@
 from typing import Protocol
 
-from rich.console import Group
+import plotille
+from rich import box
+from rich.columns import Columns
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from rich.text import Text
 
 from rl_trainer.types import CompletionRecord, StepMetrics
 
 MAX_HISTORY = 30
 RECENT_STEPS = 5
-MAX_COMPLETIONS = 3
-MAX_COMPLETION_CHARS = 220
-PLOT_WIDTH = 64
-PLOT_HEIGHT = 10
+MAX_COMPLETIONS = 2
+MAX_COMPLETION_CHARS = 140
+PLOT_HEIGHT = 8
+PLOT_MARGIN = 22
 
 
 class TrainerCallback(Protocol):
@@ -26,7 +28,8 @@ class PrintCallback:
     def __init__(self) -> None:
         self.history: list[StepMetrics] = []
         self.latest_completions: list[CompletionRecord] = []
-        self.live = Live(self._render(), refresh_per_second=4, transient=False)
+        self.console = Console()
+        self.live = Live(self._render(), console=self.console, refresh_per_second=4, transient=False)
         self.live.start()
 
     def on_step_end(self, metrics: StepMetrics) -> None:
@@ -43,38 +46,48 @@ class PrintCallback:
 
     def _render(self) -> Group:
         return Group(
-            Panel(self._summary_table(), title="Training"),
-            Panel(self._reward_plot(), title="Reward over steps"),
-            Panel(self._history_table(), title=f"Recent steps ({min(len(self.history), RECENT_STEPS)})"),
-            Panel(self._reward_function_table(), title="Reward functions"),
-            Panel(self._completion_table(), title="Latest completions"),
+            Panel(self._summary_line(), title="Training", padding=(0, 1)),
+            Panel(self._reward_plot(), title="Reward over steps", padding=(0, 1)),
+            Columns(
+                [
+                    Panel(
+                        self._history_table(),
+                        title=f"Recent ({min(len(self.history), RECENT_STEPS)})",
+                        padding=(0, 1),
+                    ),
+                    Panel(self._reward_function_table(), title="Rewards", padding=(0, 1)),
+                ],
+                expand=True,
+                equal=False,
+            ),
+            Panel(self._completion_table(), title="Latest completions", padding=(0, 1)),
         )
 
-    def _summary_table(self) -> Table:
-        table = Table.grid(expand=True)
-        table.add_column(justify="left")
-        table.add_column(justify="right")
+    def _summary_line(self) -> str:
         latest = self.history[-1] if self.history else None
         if latest is None:
-            table.add_row("step", "-")
-            table.add_row("reward", "-")
-            table.add_row("completion length", "-")
-            table.add_row("loss", "-")
-            return table
+            return "step=-  reward=-  len=-  loss=-"
 
-        table.add_row("step", str(latest.step))
-        table.add_row("reward mean", f"{latest.reward_mean:.3f}")
-        table.add_row("reward std", f"{latest.reward_std:.3f}")
-        table.add_row("loss", f"{latest.loss:.4f}")
-        table.add_row("completion length", f"{latest.completion_length_mean:.1f}")
-        table.add_row("active length", f"{latest.active_completion_length_mean:.1f}")
-        table.add_row("loss sequence fraction", f"{latest.loss_sequence_fraction:.2f}")
-        table.add_row("learning rate", f"{latest.learning_rate:.2e}")
-        table.add_row("grad norm", f"{latest.grad_norm:.3f}")
-        return table
+        return (
+            f"step={latest.step}  reward={latest.reward_mean:.3f}±{latest.reward_std:.3f}  "
+            f"len={latest.completion_length_mean:.1f} active={latest.active_completion_length_mean:.1f}  "
+            f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
+            f"lr={latest.learning_rate:.2e} grad={latest.grad_norm:.3f}{self._sync_summary(latest)}"
+        )
+
+    def _sync_summary(self, metrics: StepMetrics) -> str:
+        stats = metrics.rollout_sync_stats
+        if stats is None:
+            return ""
+
+        gib = stats.synced_bytes / (1024**3)
+        return (
+            f"  sync=step:{stats.step} tensors:{stats.synced_tensors}/{stats.loaded_tensors} "
+            f"bytes:{gib:.2f}GiB"
+        )
 
     def _history_table(self) -> Table:
-        table = Table(expand=True)
+        table = Table(box=box.SIMPLE, padding=(0, 1), expand=False)
         table.add_column("Step", justify="right")
         table.add_column("Reward", justify="right")
         table.add_column("Std", justify="right")
@@ -94,50 +107,25 @@ class PrintCallback:
             )
         return table
 
-    def _reward_plot(self) -> Text:
+    def _reward_plot(self) -> str:
         if not self.history:
-            return Text("No reward history yet.")
+            return "No reward history yet."
 
-        points = [(metrics.step, metrics.reward_mean) for metrics in self.history]
-        min_step = points[0][0]
-        max_step = points[-1][0]
-        rewards = [reward for _, reward in points]
-        min_reward = min(rewards)
-        max_reward = max(rewards)
-        reward_span = max(max_reward - min_reward, 1e-9)
-        step_span = max(max_step - min_step, 1)
-
-        canvas = [[" " for _ in range(PLOT_WIDTH)] for _ in range(PLOT_HEIGHT)]
-        mapped_points: list[tuple[int, int]] = []
-        for step, reward in points:
-            x = round((step - min_step) / step_span * (PLOT_WIDTH - 1))
-            y = PLOT_HEIGHT - 1 - round((reward - min_reward) / reward_span * (PLOT_HEIGHT - 1))
-            mapped_points.append((x, y))
-
-        for index, (x, y) in enumerate(mapped_points):
-            canvas[y][x] = "*"
-            if index == 0:
-                continue
-
-            prev_x, prev_y = mapped_points[index - 1]
-            distance = max(abs(x - prev_x), abs(y - prev_y), 1)
-            for offset in range(1, distance):
-                interp_x = round(prev_x + (x - prev_x) * offset / distance)
-                interp_y = round(prev_y + (y - prev_y) * offset / distance)
-                if canvas[interp_y][interp_x] == " ":
-                    canvas[interp_y][interp_x] = "."
-
-        rows = []
-        for row_index, row in enumerate(canvas):
-            reward = max_reward - reward_span * row_index / max(PLOT_HEIGHT - 1, 1)
-            rows.append(f"{reward:>8.3f} |{''.join(row)}")
-
-        rows.append(f"{'':>8} +{'-' * PLOT_WIDTH}")
-        rows.append(f"{'step':>8}  {min_step:<{PLOT_WIDTH // 2}}{max_step:>{PLOT_WIDTH - (PLOT_WIDTH // 2)}}")
-        return Text("\n".join(rows))
+        steps = [metrics.step for metrics in self.history]
+        rewards = [metrics.reward_mean for metrics in self.history]
+        width = max(24, self.console.size.width - PLOT_MARGIN)
+        return plotille.plot(
+            steps,
+            rewards,
+            width=width,
+            height=PLOT_HEIGHT,
+            X_label="step",
+            Y_label="reward",
+            origin=False,
+        )
 
     def _reward_function_table(self) -> Table:
-        table = Table(expand=True)
+        table = Table(box=box.SIMPLE, padding=(0, 1), expand=False)
         table.add_column("Reward", overflow="fold")
         table.add_column("Mean", justify="right")
         latest = self.history[-1] if self.history else None
@@ -149,7 +137,7 @@ class PrintCallback:
         return table
 
     def _completion_table(self) -> Table:
-        table = Table(expand=True)
+        table = Table(box=box.SIMPLE, padding=(0, 1), expand=False)
         table.add_column("Reward", justify="right")
         table.add_column("Adv", justify="right")
         table.add_column("Chars", justify="right")
