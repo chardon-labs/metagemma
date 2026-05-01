@@ -3,3 +3,4 @@
 - If you need to execute Python with fine-tuning dependencies, run from `fine_tuning/` and use `fine_tuning/.venv/`.
 - Avoid CLI options for scripts, prefer hard-coded constants
 - Prefer concise responses without skipping on details. Prioritize information density.
+- The machine you're running on doesn't have an NVIDIA GPU, all training code can only run on the remote machine synced in `scripts/`
