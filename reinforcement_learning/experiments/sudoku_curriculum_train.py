@@ -66,10 +66,6 @@ def build_training_config() -> RLTrainerConfig:
         max_steps=MAX_STEPS,
         save_steps=100,
         output_dir=OUTPUT_DIR,
-        epsilon=0.2,
-        epsilon_high=0.28,
-        delta=1.5,
-        loss_type="bnpo",
         mask_truncated_completions=True,
     )
 

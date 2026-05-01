@@ -1,6 +1,7 @@
-from rl_trainer.types import Completion, RewardFunction
+from collections.abc import Sequence
+
+from rl_trainer.types import RewardBatch, RewardFunction
 from tasks.sudoku.parsing import grid_from_sequence, int_from_sequence, parse_solution_grid
-from tasks.sudoku.types import RewardField
 from tasks.sudoku.validation import (
     correct_cell_fraction,
     exact_match,
@@ -11,52 +12,44 @@ from tasks.sudoku.validation import (
 )
 
 
-async def solution_parses(
-    completions: list[Completion],
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+def _field(batch: RewardBatch, name: str) -> Sequence[object]:
+    return batch.extra_fields[name]
+
+
+async def solution_parses(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         parsed = parse_solution_grid(completion[0]["content"], int_from_sequence(size, index))
         scores.append(1.0 if parsed is not None else 0.0)
     return scores
 
 
-async def correct_shape(
-    completions: list[Completion],
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def correct_shape(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         scores.append(1.0 if has_correct_shape(parsed, expected_size) else 0.0)
     return scores
 
 
-async def numbers_in_range(
-    completions: list[Completion],
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def numbers_in_range(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         scores.append(1.0 if has_numbers_in_range(parsed, expected_size) else 0.0)
     return scores
 
 
-async def respects_given_cells(
-    completions: list[Completion],
-    puzzle: RewardField,
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def respects_given_cells(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    puzzle = _field(batch, "puzzle")
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         prompt_grid = grid_from_sequence(puzzle, index)
@@ -64,15 +57,12 @@ async def respects_given_cells(
     return scores
 
 
-async def valid_sudoku(
-    completions: list[Completion],
-    size: RewardField,
-    box_rows: RewardField,
-    box_cols: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def valid_sudoku(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    size = _field(batch, "size")
+    box_rows = _field(batch, "box_rows")
+    box_cols = _field(batch, "box_cols")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         scores.append(
@@ -88,14 +78,11 @@ async def valid_sudoku(
     return scores
 
 
-async def correct_cells(
-    completions: list[Completion],
-    solution: RewardField,
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def correct_cells(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    solution = _field(batch, "solution")
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         solution_grid = grid_from_sequence(solution, index)
@@ -103,14 +90,11 @@ async def correct_cells(
     return scores
 
 
-async def exact_solution(
-    completions: list[Completion],
-    solution: RewardField,
-    size: RewardField,
-    **_kwargs: RewardField,
-) -> list[float | None]:
+async def exact_solution(batch: RewardBatch) -> list[float | None]:
     scores: list[float | None] = []
-    for index, completion in enumerate(completions):
+    solution = _field(batch, "solution")
+    size = _field(batch, "size")
+    for index, completion in enumerate(batch.completions):
         expected_size = int_from_sequence(size, index)
         parsed = parse_solution_grid(completion[0]["content"], expected_size)
         solution_grid = grid_from_sequence(solution, index)

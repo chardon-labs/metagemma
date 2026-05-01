@@ -4,11 +4,8 @@ from typing import Protocol, TypeAlias
 
 import torch
 
-from rl_trainer.config import LossType
-
 Message: TypeAlias = dict[str, str]
 Completion: TypeAlias = list[Message]
-RewardFunction: TypeAlias = Callable[..., Awaitable[list[float | None]]]
 
 
 @dataclass(frozen=True)
@@ -36,7 +33,6 @@ class RolloutBatch:
     prompt_attention_mask: torch.Tensor
     completion_ids: torch.Tensor
     completion_mask: torch.Tensor
-    old_logprobs: torch.Tensor
     completions: list[Completion]
 
 
@@ -45,8 +41,12 @@ class RewardBatch:
     prompts: list[list[dict[str, object]]]
     completions: list[Completion]
     completion_ids: list[list[int]]
+    completion_mask: list[list[float]]
     extra_fields: dict[str, list[object]]
     trainer_state: "TrainerState"
+
+
+RewardFunction: TypeAlias = Callable[[RewardBatch], Awaitable[list[float | None]]]
 
 
 @dataclass(frozen=True)
@@ -65,20 +65,13 @@ class AdvantageBatch:
 @dataclass(frozen=True)
 class LossInput:
     current_logprobs: torch.Tensor
-    old_logprobs: torch.Tensor
     advantages: torch.Tensor
     completion_mask: torch.Tensor
-    epsilon: float
-    epsilon_high: float
-    delta: float | None
-    loss_type: LossType
 
 
 @dataclass(frozen=True)
 class LossOutput:
     loss: torch.Tensor
-    mean_ratio: float
-    clip_ratio: float
 
 
 @dataclass(frozen=True)
@@ -92,8 +85,6 @@ class StepMetrics:
     loss_sequence_fraction: float
     learning_rate: float
     grad_norm: float
-    mean_ratio: float
-    clip_ratio: float
     reward_function_means: dict[str, float]
 
 
@@ -127,10 +118,3 @@ class OptimizerFactory(Protocol):
 
 class SchedulerFactory(Protocol):
     def __call__(self, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler.LRScheduler: ...
-
-
-class Environment(Protocol):
-    async def reset(self, example: TrainingExample) -> str | None: ...
-
-
-EnvironmentFactory: TypeAlias = Callable[[], Environment]

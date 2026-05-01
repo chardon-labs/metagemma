@@ -1,9 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 
-LossType = Literal["bnpo", "grpo"]
 OptimizerType = Literal["adamw_8bit", "adamw"]
 
 
@@ -23,10 +22,6 @@ class RLTrainerConfig:
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = 0
-    epsilon: float = 0.2
-    epsilon_high: float | None = None
-    delta: float | None = None
-    loss_type: LossType = "bnpo"
     mask_truncated_completions: bool = True
     max_grad_norm: float = 1.0
     seed: int = 3407
@@ -36,7 +31,4 @@ class RLTrainerConfig:
     use_generation_cache: bool = True
     disable_generation_compile: bool = True
     empty_cache_steps: int | None = 1
-
-    @property
-    def effective_epsilon_high(self) -> float:
-        return self.epsilon if self.epsilon_high is None else self.epsilon_high
+    chat_template_kwargs: dict[str, bool] = field(default_factory=dict)

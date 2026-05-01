@@ -11,13 +11,7 @@ def reward_name(reward_function: RewardFunction) -> str:
 
 async def score_rewards(reward_functions: list[RewardFunction], batch: RewardBatch, device: torch.device) -> RewardResult:
     async def score_one(reward_function: RewardFunction) -> list[float | None]:
-        return await reward_function(
-            prompts=batch.prompts,
-            completions=batch.completions,
-            completion_ids=batch.completion_ids,
-            trainer_state=batch.trainer_state,
-            **batch.extra_fields,
-        )
+        return await reward_function(batch)
 
     raw_scores = await asyncio.gather(*(score_one(function) for function in reward_functions))
     columns = []

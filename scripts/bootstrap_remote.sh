@@ -33,7 +33,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 echo "Installing apt packages..."
 apt_get update
-apt_get install -y bubblewrap btop curl ca-certificates unzip
+apt_get install -y btop curl ca-certificates unzip
 
 export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
 export PATH="$BUN_INSTALL/bin:$PATH"

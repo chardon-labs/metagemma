@@ -44,7 +44,6 @@ class TransformersRolloutEngine:
         sequences = outputs.sequences.clone()
         completion_ids = sequences[:, repeated_prompt_ids.shape[1] :].clone()
         mask = completion_mask(completion_ids, self.eos_token_id, self.pad_token_id).clone()
-        old_logprobs = torch.zeros_like(completion_ids, dtype=torch.float32)
         completion_texts = self.tokenizer.batch_decode(completion_ids, skip_special_tokens=True)
         completions: list[Completion] = [[{"role": "assistant", "content": text}] for text in completion_texts]
         del outputs
@@ -54,13 +53,17 @@ class TransformersRolloutEngine:
             prompt_attention_mask=repeated_attention_mask,
             completion_ids=completion_ids,
             completion_mask=mask,
-            old_logprobs=old_logprobs,
             completions=completions,
         )
 
     def _tokenize(self, batch: PromptBatch) -> TokenBatch:
         prompt_texts = [
-            self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            self.tokenizer.apply_chat_template(
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True,
+                **self.config.chat_template_kwargs,
+            )
             for prompt in batch.prompts
         ]
         tokens = self.tokenizer(
@@ -153,7 +156,6 @@ class VLLMRolloutEngine:
         prompt_ids, prompt_attention_mask = self._left_pad_prompts(prompt_token_lists)
         completion_ids = self._right_pad_completions(completion_token_lists)
         mask = completion_mask(completion_ids, self.eos_token_id, self.pad_token_id).clone()
-        old_logprobs = torch.zeros_like(completion_ids, dtype=torch.float32)
         completions: list[Completion] = [[{"role": "assistant", "content": text}] for text in completion_texts]
 
         return RolloutBatch(
@@ -161,7 +163,6 @@ class VLLMRolloutEngine:
             prompt_attention_mask=prompt_attention_mask,
             completion_ids=completion_ids,
             completion_mask=mask,
-            old_logprobs=old_logprobs,
             completions=completions,
         )
 
@@ -172,7 +173,12 @@ class VLLMRolloutEngine:
         count: int,
     ) -> list[str]:
         prompt_texts = [
-            self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            self.tokenizer.apply_chat_template(
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True,
+                **self.config.chat_template_kwargs,
+            )
             for prompt in prompts
             for _ in range(count)
         ]
@@ -263,7 +269,12 @@ class VLLMRolloutEngine:
 
     def _prompt_texts(self, batch: PromptBatch) -> list[str]:
         return [
-            self.tokenizer.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+            self.tokenizer.apply_chat_template(
+                prompt,
+                tokenize=False,
+                add_generation_prompt=True,
+                **self.config.chat_template_kwargs,
+            )
             for prompt in batch.prompts
         ]
 
