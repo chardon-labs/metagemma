@@ -30,19 +30,32 @@ class PrintCallback:
         self.latest_completions: list[CompletionRecord] = []
         self.console = Console()
         self.live = Live(self._render(), console=self.console, refresh_per_second=4, transient=False)
-        self.live.start()
+        self.started = False
+        self.closed = False
 
     def on_step_end(self, metrics: StepMetrics) -> None:
+        self._start()
         self.history.append(metrics)
         self.history = self.history[-MAX_HISTORY:]
         self.live.update(self._render(), refresh=True)
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
+        self._start()
         self.latest_completions = records[:MAX_COMPLETIONS]
         self.live.update(self._render(), refresh=True)
 
     def close(self) -> None:
-        self.live.stop()
+        if self.closed:
+            return
+        if self.started:
+            self.live.stop()
+        self.closed = True
+
+    def _start(self) -> None:
+        if self.started:
+            return
+        self.live.start()
+        self.started = True
 
     def _render(self) -> Group:
         return Group(
@@ -72,7 +85,18 @@ class PrintCallback:
             f"step={latest.step}  reward={latest.reward_mean:.3f}±{latest.reward_std:.3f}  "
             f"len={latest.completion_length_mean:.1f} active={latest.active_completion_length_mean:.1f}  "
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
-            f"lr={latest.learning_rate:.2e} grad={latest.grad_norm:.3f}{self._sync_summary(latest)}"
+            f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
+            f"clip={latest.grad_clip_scale:.2f}{self._timing_summary(latest)}{self._sync_summary(latest)}"
+        )
+
+    def _timing_summary(self, metrics: StepMetrics) -> str:
+        timings = metrics.timings
+        if timings is None:
+            return ""
+
+        return (
+            f"  t=roll:{timings.rollout_seconds:.2f}s "
+            f"back:{timings.backward_seconds:.2f}s opt:{timings.optimizer_seconds:.2f}s"
         )
 
     def _sync_summary(self, metrics: StepMetrics) -> str:
@@ -94,8 +118,12 @@ class PrintCallback:
         table.add_column("Len", justify="right")
         table.add_column("Active", justify="right")
         table.add_column("Loss", justify="right")
-        table.add_column("Grad", justify="right")
+        table.add_column("RawGrad", justify="right")
+        table.add_column("Clip", justify="right")
+        table.add_column("Roll", justify="right")
+        table.add_column("Back", justify="right")
         for metrics in self.history[-RECENT_STEPS:]:
+            timings = metrics.timings
             table.add_row(
                 str(metrics.step),
                 f"{metrics.reward_mean:.3f}",
@@ -104,6 +132,9 @@ class PrintCallback:
                 f"{metrics.active_completion_length_mean:.1f}",
                 f"{metrics.loss:.4f}",
                 f"{metrics.grad_norm:.3f}",
+                f"{metrics.grad_clip_scale:.2f}",
+                "-" if timings is None else f"{timings.rollout_seconds:.2f}",
+                "-" if timings is None else f"{timings.backward_seconds:.2f}",
             )
         return table
 

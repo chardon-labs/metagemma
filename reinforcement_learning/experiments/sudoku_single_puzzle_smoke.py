@@ -22,9 +22,9 @@ FAST_INFERENCE = False
 FULL_FINETUNING = True
 
 PUZZLE_DIFFICULTY = 0.35
-CANDIDATE_COMPLETIONS = 8
-MIN_ACCEPTED_SOLVES = 2
-MAX_ACCEPTED_SOLVES = 6
+CANDIDATE_COMPLETIONS = 128
+MIN_ACCEPTED_SOLVES = 32
+MAX_ACCEPTED_SOLVES = 96
 MAX_PUZZLE_CANDIDATES = 32
 EVAL_COMPLETIONS = 64
 PERIODIC_EVAL_STEPS = 10
@@ -66,7 +66,8 @@ def build_training_config() -> RLTrainerConfig:
         logging_steps=1,
         batch_size=1,
         gradient_accumulation_steps=1,
-        num_generations=8,
+        num_generations=128,
+        backward_microbatch_size=8,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
@@ -152,6 +153,7 @@ def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "smoke_training_config "
         f"generations={config.num_generations} lr={config.learning_rate:.2e} "
+        f"backward_microbatch={config.backward_microbatch_size} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "
         f"max_completion={config.max_completion_length} "
         f"mask_truncated={config.mask_truncated_completions} "

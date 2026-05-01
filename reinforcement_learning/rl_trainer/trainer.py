@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, cast
 
 import torch
@@ -25,10 +26,12 @@ from rl_trainer.types import (
     RewardBatch,
     RewardFunction,
     RewardResult,
+    RolloutBatch,
     RolloutEngine,
     RolloutSyncStats,
     SchedulerFactory,
     StepMetrics,
+    StepTimings,
     TrainingExample,
     TrainerState,
 )
@@ -38,6 +41,7 @@ from rl_trainer.types import (
 class _MicrobatchResult:
     loss: float
     metrics: StepMetrics
+    timings: StepTimings
 
 
 class RLTrainer:
@@ -59,6 +63,8 @@ class RLTrainer:
         self.train_dataset = train_dataset
         self.reward_functions = reward_functions
         self.config = config
+        if config.backward_microbatch_size is not None and config.backward_microbatch_size <= 0:
+            raise ValueError("backward_microbatch_size must be positive when set.")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.rollout_engine = rollout_engine or TransformersRolloutEngine(model, tokenizer, config, self.device)
@@ -94,28 +100,51 @@ class RLTrainer:
         while self.state.step < self.config.max_steps:
             accumulated_loss = 0.0
             latest_metrics: StepMetrics | None = None
+            accumulated_timings = StepTimings(
+                rollout_seconds=0.0,
+                reward_seconds=0.0,
+                backward_seconds=0.0,
+                optimizer_seconds=0.0,
+                microbatch_seconds=0.0,
+            )
 
             for _ in range(self.config.gradient_accumulation_steps):
                 result = self._train_microbatch(next(batches))
                 accumulated_loss += result.loss
                 latest_metrics = result.metrics
+                accumulated_timings = self._add_timings(accumulated_timings, result.timings)
 
+            optimizer_start = perf_counter()
             grad_norm = self._optimizer_step()
+            optimizer_seconds = perf_counter() - optimizer_start
+            accumulated_timings = StepTimings(
+                rollout_seconds=accumulated_timings.rollout_seconds,
+                reward_seconds=accumulated_timings.reward_seconds,
+                backward_seconds=accumulated_timings.backward_seconds,
+                optimizer_seconds=optimizer_seconds,
+                microbatch_seconds=accumulated_timings.microbatch_seconds,
+            )
             self._emit_step_metrics(
                 accumulated_loss=accumulated_loss,
                 latest_metrics=latest_metrics,
                 grad_norm=grad_norm,
+                timings=self._average_timings(accumulated_timings),
             )
 
             if self.config.save_steps > 0 and self.state.step % self.config.save_steps == 0:
                 self.save_checkpoint(self.config.output_dir / f"checkpoint-{self.state.step}")
 
     def _train_microbatch(self, examples: list[TrainingExample]) -> _MicrobatchResult:
+        microbatch_start = perf_counter()
         prompt_batch = make_prompt_batch(examples)
+
+        rollout_start = perf_counter()
         rollout = self.rollout_engine.generate(prompt_batch)
+        rollout_seconds = perf_counter() - rollout_start
         if self.config.empty_cache_steps is not None:
             self._empty_cuda_cache()
 
+        reward_start = perf_counter()
         reward_result = asyncio.run(
             self._score(
                 prompt_batch,
@@ -124,36 +153,25 @@ class RLTrainer:
                 rollout.completion_mask,
             )
         )
+        reward_seconds = perf_counter() - reward_start
         advantages = group_relative_advantages(reward_result.total, self.config.num_generations)
 
+        backward_start = perf_counter()
         self.model.train()
-        current_logprobs = policy_logprobs(
-            self.model,
-            rollout.prompt_ids,
-            rollout.prompt_attention_mask,
-            rollout.completion_ids,
-            rollout.completion_mask,
-            self.config.temperature,
-        )
-        self._assert_finite_tensor("current logprobs", current_logprobs)
-
         loss_mask = self._loss_mask(rollout.completion_ids, rollout.completion_mask)
-        loss_output = policy_gradient_loss(
-            LossInput(
-                current_logprobs=current_logprobs,
-                advantages=advantages.advantages.detach(),
-                completion_mask=loss_mask,
-            )
+        loss_normalizer = loss_mask.sum().clamp(min=1.0)
+        loss = self._backward_rollout_chunks(
+            rollout=rollout,
+            advantages=advantages.advantages.detach(),
+            loss_mask=loss_mask,
+            loss_normalizer=loss_normalizer,
         )
-        self._assert_finite_tensor("loss", loss_output.loss)
-        scaled_loss = loss_output.loss / self.config.gradient_accumulation_steps
-        scaled_loss.backward()
+        backward_seconds = perf_counter() - backward_start
 
         if self._should_log():
             self._log_completions(prompt_batch, rollout.completions, reward_result.total, advantages.advantages)
 
         self.state.examples_seen += len(prompt_batch.examples)
-        loss = float(loss_output.loss.detach().cpu())
         return _MicrobatchResult(
             loss=loss,
             metrics=self._metrics(
@@ -162,7 +180,50 @@ class RLTrainer:
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
             ),
+            timings=StepTimings(
+                rollout_seconds=rollout_seconds,
+                reward_seconds=reward_seconds,
+                backward_seconds=backward_seconds,
+                optimizer_seconds=0.0,
+                microbatch_seconds=perf_counter() - microbatch_start,
+            ),
         )
+
+    def _backward_rollout_chunks(
+        self,
+        *,
+        rollout: RolloutBatch,
+        advantages: torch.Tensor,
+        loss_mask: torch.Tensor,
+        loss_normalizer: torch.Tensor,
+    ) -> float:
+        chunk_size = self.config.backward_microbatch_size or rollout.completion_ids.shape[0]
+        accumulated_loss = 0.0
+        for start in range(0, rollout.completion_ids.shape[0], chunk_size):
+            stop = min(start + chunk_size, rollout.completion_ids.shape[0])
+            current_logprobs = policy_logprobs(
+                self.model,
+                rollout.prompt_ids[start:stop],
+                rollout.prompt_attention_mask[start:stop],
+                rollout.completion_ids[start:stop],
+                rollout.completion_mask[start:stop],
+                self.config.temperature,
+            )
+            self._assert_finite_tensor("current logprobs", current_logprobs)
+            loss_output = policy_gradient_loss(
+                LossInput(
+                    current_logprobs=current_logprobs,
+                    advantages=advantages[start:stop],
+                    completion_mask=loss_mask[start:stop],
+                    normalizer=loss_normalizer,
+                )
+            )
+            self._assert_finite_tensor("loss", loss_output.loss)
+            scaled_loss = loss_output.loss / self.config.gradient_accumulation_steps
+            scaled_loss.backward()
+            accumulated_loss += float(loss_output.loss.detach().cpu())
+
+        return accumulated_loss
 
     def _optimizer_step(self) -> torch.Tensor:
         self._assert_finite_trainable_parameters("before optimizer step")
@@ -187,6 +248,7 @@ class RLTrainer:
         accumulated_loss: float,
         latest_metrics: StepMetrics | None,
         grad_norm: torch.Tensor,
+        timings: StepTimings,
     ) -> None:
         if latest_metrics is None or not self._should_log():
             return
@@ -201,11 +263,32 @@ class RLTrainer:
             loss_sequence_fraction=latest_metrics.loss_sequence_fraction,
             learning_rate=self._learning_rate(),
             grad_norm=float(grad_norm.detach().cpu()),
+            grad_clip_scale=self._grad_clip_scale(grad_norm),
             reward_function_means=latest_metrics.reward_function_means,
             rollout_sync_stats=self._rollout_sync_stats(),
+            timings=timings,
         )
         for callback in self.callbacks:
             callback.on_step_end(metrics)
+
+    def _add_timings(self, left: StepTimings, right: StepTimings) -> StepTimings:
+        return StepTimings(
+            rollout_seconds=left.rollout_seconds + right.rollout_seconds,
+            reward_seconds=left.reward_seconds + right.reward_seconds,
+            backward_seconds=left.backward_seconds + right.backward_seconds,
+            optimizer_seconds=left.optimizer_seconds + right.optimizer_seconds,
+            microbatch_seconds=left.microbatch_seconds + right.microbatch_seconds,
+        )
+
+    def _average_timings(self, timings: StepTimings) -> StepTimings:
+        microbatch_count = max(1, self.config.gradient_accumulation_steps)
+        return StepTimings(
+            rollout_seconds=timings.rollout_seconds / microbatch_count,
+            reward_seconds=timings.reward_seconds / microbatch_count,
+            backward_seconds=timings.backward_seconds / microbatch_count,
+            optimizer_seconds=timings.optimizer_seconds,
+            microbatch_seconds=timings.microbatch_seconds / microbatch_count,
+        )
 
     async def _score(
         self,
@@ -271,6 +354,7 @@ class RLTrainer:
             loss_sequence_fraction=float(active_lengths.gt(0).to(torch.float32).mean().detach().cpu()),
             learning_rate=self._learning_rate(),
             grad_norm=0.0,
+            grad_clip_scale=1.0,
             reward_function_means=reward_function_means,
         )
 
@@ -308,6 +392,10 @@ class RLTrainer:
 
     def _learning_rate(self) -> float:
         return float(cast(float, self.scheduler.get_last_lr()[0]))
+
+    def _grad_clip_scale(self, grad_norm: torch.Tensor) -> float:
+        raw_grad_norm = float(grad_norm.detach().cpu())
+        return min(1.0, self.config.max_grad_norm / (raw_grad_norm + 1e-6))
 
     def _sync_rollout_engine(self) -> None:
         sync_after_optimizer_step = getattr(self.rollout_engine, "sync_after_optimizer_step", None)

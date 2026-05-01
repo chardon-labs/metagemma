@@ -97,7 +97,8 @@ def build_training_config() -> RLTrainerConfig:
         logging_steps=1,
         batch_size=1,
         gradient_accumulation_steps=1,
-        num_generations=8,
+        num_generations=128,
+        backward_microbatch_size=8,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
@@ -116,6 +117,7 @@ def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "hey_length_smoke_config "
         f"generations={config.num_generations} lr={config.learning_rate:.2e} "
+        f"backward_microbatch={config.backward_microbatch_size} "
         f"temperature={config.temperature:.2f} max_completion={config.max_completion_length} "
         f"thinking={ENABLE_THINKING} mask_truncated={config.mask_truncated_completions} "
         f"vllm_sync_steps={VLLM_SYNC_STEPS}",

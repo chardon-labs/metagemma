@@ -6,7 +6,7 @@ from rl_trainer.types import CompletionRecord, StepMetrics
 
 @dataclass
 class SudokuCurriculum:
-    difficulty: float = 0.0
+    difficulty: float = 0.35
     min_difficulty: float = 0.1
     max_difficulty: float = 1.0
     window: int = 20
@@ -18,22 +18,11 @@ class SudokuCurriculum:
             self.history = self.history[-self.window :]
 
         averaged = self._averaged_metrics()
-        parse_ready = (
-            averaged.get("solution_parses", 0.0) >= 0.95
-            and averaged.get("correct_shape", 0.0) >= 0.95
-            and averaged.get("numbers_in_range", 0.0) >= 0.95
-        )
-        if not parse_ready:
-            self.difficulty = max(self.min_difficulty, self.difficulty - 0.05)
-            return
-
         exact = averaged.get("exact_solution", 0.0)
-        valid = averaged.get("valid_sudoku", 0.0)
-        total = averaged.get("reward_mean", 0.0)
 
-        if exact >= 9.0 and valid >= 3.5:
+        if exact >= 0.8:
             self.difficulty = min(self.max_difficulty, self.difficulty + 0.03)
-        elif total <= 1.0:
+        elif exact <= 0.2:
             self.difficulty = max(self.min_difficulty, self.difficulty - 0.05)
 
     def _averaged_metrics(self) -> dict[str, float]:

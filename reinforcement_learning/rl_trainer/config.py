@@ -19,6 +19,7 @@ class RLTrainerConfig:
     logging_steps: int
     save_steps: int
     output_dir: Path
+    backward_microbatch_size: int | None = None
     temperature: float = 1.0
     top_p: float = 1.0
     top_k: int = 0

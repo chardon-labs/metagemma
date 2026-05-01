@@ -75,11 +75,21 @@ class LossInput:
     current_logprobs: torch.Tensor
     advantages: torch.Tensor
     completion_mask: torch.Tensor
+    normalizer: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
 class LossOutput:
     loss: torch.Tensor
+
+
+@dataclass(frozen=True)
+class StepTimings:
+    rollout_seconds: float
+    reward_seconds: float
+    backward_seconds: float
+    optimizer_seconds: float
+    microbatch_seconds: float
 
 
 @dataclass(frozen=True)
@@ -93,8 +103,10 @@ class StepMetrics:
     loss_sequence_fraction: float
     learning_rate: float
     grad_norm: float
+    grad_clip_scale: float
     reward_function_means: dict[str, float]
     rollout_sync_stats: RolloutSyncStats | None = None
+    timings: StepTimings | None = None
 
 
 @dataclass(frozen=True)
