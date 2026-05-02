@@ -1,3 +1,6 @@
+import json
+from dataclasses import asdict
+from pathlib import Path
 from typing import Protocol
 
 import plotille
@@ -86,8 +89,19 @@ class PrintCallback:
             f"len={latest.completion_length_mean:.1f} active={latest.active_completion_length_mean:.1f}  "
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
             f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
-            f"clip={latest.grad_clip_scale:.2f}{self._timing_summary(latest)}{self._sync_summary(latest)}"
+            f"clip={latest.grad_clip_scale:.2f}{self._diagnostics_summary(latest)}"
+            f"{self._timing_summary(latest)}{self._sync_summary(latest)}"
         )
+
+    def _diagnostics_summary(self, metrics: StepMetrics) -> str:
+        diagnostics = metrics.diagnostics
+        if diagnostics is None:
+            return ""
+        tpo_eff_k = diagnostics.get("tpo_target_eff_k")
+        tpo_log_std = diagnostics.get("tpo_old_log_score_std")
+        if tpo_eff_k is None or tpo_log_std is None:
+            return ""
+        return f" tpo_eff_k={tpo_eff_k:.1f} old_log_std={tpo_log_std:.1f}"
 
     def _timing_summary(self, metrics: StepMetrics) -> str:
         timings = metrics.timings
@@ -187,3 +201,27 @@ class PrintCallback:
         if len(compact) <= MAX_COMPLETION_CHARS:
             return compact
         return compact[: MAX_COMPLETION_CHARS - 3] + "..."
+
+
+class JSONLLogCallback:
+    def __init__(self, log_dir: Path) -> None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        self.metrics_file = (log_dir / "metrics.jsonl").open("a", encoding="utf-8")
+        self.completions_file = (log_dir / "completions.jsonl").open("a", encoding="utf-8")
+        self.closed = False
+
+    def on_step_end(self, metrics: StepMetrics) -> None:
+        self.metrics_file.write(json.dumps(asdict(metrics), sort_keys=True) + "\n")
+        self.metrics_file.flush()
+
+    def on_completions(self, records: list[CompletionRecord]) -> None:
+        for record in records:
+            self.completions_file.write(json.dumps(asdict(record), sort_keys=True) + "\n")
+        self.completions_file.flush()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.metrics_file.close()
+        self.completions_file.close()
+        self.closed = True

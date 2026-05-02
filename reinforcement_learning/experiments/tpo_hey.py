@@ -6,7 +6,7 @@ from typing import Any
 import torch
 from unsloth import FastVisionModel
 
-from rl_trainer import PrintCallback, RLTrainer, RLTrainerConfig
+from rl_trainer import JSONLLogCallback, MuonOptimizerConfig, PrintCallback, RLTrainer, RLTrainerConfig, TPOAlgorithmConfig
 from rl_trainer.generation import VLLMRolloutEngine
 from rl_trainer.types import RewardBatch
 
@@ -22,8 +22,12 @@ PROMPT_TEXT = "hey"
 ENABLE_THINKING = True
 DATASET_SIZE = 1000
 MAX_STEPS = 100
-OUTPUT_DIR = Path("outputs/hey_length_smoke")
+OUTPUT_DIR = Path("outputs/tpo_hey")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
+TPO_ROLLOUTS = 128
+TPO_ETA = 1.0
+TPO_OPTIMIZATION_EPOCHS = 1
+TPO_LEARNING_RATE = 1e-5
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -90,24 +94,23 @@ def build_vllm_engine(
 
 def build_training_config() -> RLTrainerConfig:
     return RLTrainerConfig(
-        temperature=1.0,
-        learning_rate=5e-6,
-        weight_decay=0.0,
         warmup_ratio=0.0,
         logging_steps=1,
         batch_size=1,
         gradient_accumulation_steps=1,
-        num_generations=128,
+        num_generations=TPO_ROLLOUTS,
         backward_microbatch_size=8,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
         output_dir=OUTPUT_DIR,
+        optimizer=MuonOptimizerConfig(learning_rate=TPO_LEARNING_RATE, weight_decay=0.0),
+        algorithm=TPOAlgorithmConfig(eta=TPO_ETA, optimization_epochs=TPO_OPTIMIZATION_EPOCHS),
+        temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,
         seed=RANDOM_STATE,
         shuffle=True,
-        optimizer="adamw",
         empty_cache_steps=1,
         chat_template_kwargs={"enable_thinking": ENABLE_THINKING},
     )
@@ -115,9 +118,10 @@ def build_training_config() -> RLTrainerConfig:
 
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
-        "hey_length_smoke_config "
+        "tpo_hey_config "
         f"generations={config.num_generations} lr={config.learning_rate:.2e} "
         f"backward_microbatch={config.backward_microbatch_size} "
+        f"tpo_eta={TPO_ETA:.2f} tpo_epochs={TPO_OPTIMIZATION_EPOCHS} "
         f"temperature={config.temperature:.2f} max_completion={config.max_completion_length} "
         f"thinking={ENABLE_THINKING} mask_truncated={config.mask_truncated_completions} "
         f"vllm_sync_steps={VLLM_SYNC_STEPS}",
@@ -139,7 +143,7 @@ def main() -> None:
         reward_functions=[short_completion_reward],
         config=config,
         rollout_engine=rollout_engine,
-        callbacks=[PrintCallback()],
+        callbacks=[PrintCallback(), JSONLLogCallback(OUTPUT_DIR / "logs")],
     )
     trainer.train()
 

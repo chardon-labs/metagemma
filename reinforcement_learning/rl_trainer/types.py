@@ -1,6 +1,6 @@
 from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
-from typing import Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias
 
 import torch
 
@@ -105,6 +105,7 @@ class StepMetrics:
     grad_norm: float
     grad_clip_scale: float
     reward_function_means: dict[str, float]
+    diagnostics: dict[str, float] | None = None
     rollout_sync_stats: RolloutSyncStats | None = None
     timings: StepTimings | None = None
 
@@ -133,9 +134,23 @@ class RolloutEngine(Protocol):
     def generate(self, batch: PromptBatch) -> RolloutBatch: ...
 
 
+class OptimizerLike(Protocol):
+    param_groups: list[dict[str, Any]]
+
+    def step(self) -> None: ...
+
+    def zero_grad(self, set_to_none: bool = True) -> None: ...
+
+
+class SchedulerLike(Protocol):
+    def step(self) -> None: ...
+
+    def get_last_lr(self) -> list[float]: ...
+
+
 class OptimizerFactory(Protocol):
-    def __call__(self, parameters: Iterable[torch.nn.Parameter]) -> torch.optim.Optimizer: ...
+    def __call__(self, parameters: Iterable[torch.nn.Parameter]) -> OptimizerLike: ...
 
 
 class SchedulerFactory(Protocol):
-    def __call__(self, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler.LRScheduler: ...
+    def __call__(self, optimizer: OptimizerLike) -> SchedulerLike: ...

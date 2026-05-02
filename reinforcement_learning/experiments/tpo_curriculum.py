@@ -4,7 +4,15 @@ from typing import Any
 import torch
 from unsloth import FastVisionModel
 
-from rl_trainer import PrintCallback, RLTrainer, RLTrainerConfig, TrainerCallback
+from rl_trainer import (
+    JSONLLogCallback,
+    MuonOptimizerConfig,
+    PrintCallback,
+    RLTrainer,
+    RLTrainerConfig,
+    TPOAlgorithmConfig,
+    TrainerCallback,
+)
 from rl_trainer.generation import VLLMRolloutEngine
 from tasks.sudoku import (
     SUDOKU_REWARD_FUNCTIONS,
@@ -21,9 +29,13 @@ FAST_INFERENCE = False
 FULL_FINETUNING = True
 DATASET_SIZE = 1000
 MAX_STEPS = 60
-OUTPUT_DIR = Path("outputs/sudoku_curriculum_train")
+OUTPUT_DIR = Path("outputs/tpo_curriculum")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
 MAX_COMPLETION_LENGTH = 2048
+TPO_ROLLOUTS = 128
+TPO_ETA = 1.0
+TPO_OPTIMIZATION_EPOCHS = 1
+TPO_LEARNING_RATE = 1e-5
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -49,24 +61,23 @@ def load_model_and_tokenizer() -> tuple[Any, Any]:
 
 def build_training_config() -> RLTrainerConfig:
     return RLTrainerConfig(
-        temperature=1.0,
-        learning_rate=5e-6,
-        weight_decay=0.001,
-        warmup_ratio=0.03,
+        warmup_ratio=0.0,
         logging_steps=1,
         batch_size=1,
         gradient_accumulation_steps=1,
-        num_generations=128,
+        num_generations=TPO_ROLLOUTS,
         backward_microbatch_size=8,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
         output_dir=OUTPUT_DIR,
+        optimizer=MuonOptimizerConfig(learning_rate=TPO_LEARNING_RATE, weight_decay=0.0),
+        algorithm=TPOAlgorithmConfig(eta=TPO_ETA, optimization_epochs=TPO_OPTIMIZATION_EPOCHS),
+        temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,
         seed=RANDOM_STATE,
         shuffle=True,
-        optimizer="adamw",
         empty_cache_steps=1,
     )
 
@@ -94,9 +105,10 @@ def build_vllm_engine(
 
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
-        "curriculum_training_config "
+        "tpo_curriculum_config "
         f"generations={config.num_generations} lr={config.learning_rate:.2e} "
         f"backward_microbatch={config.backward_microbatch_size} "
+        f"tpo_eta={TPO_ETA:.2f} tpo_epochs={TPO_OPTIMIZATION_EPOCHS} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "
         f"max_completion={config.max_completion_length} "
         f"mask_truncated={config.mask_truncated_completions} "
@@ -120,7 +132,11 @@ def main() -> None:
     print("Dataset sample:")
     print(dataset[0])
 
-    callbacks: list[TrainerCallback] = [PrintCallback(), CurriculumCallback(curriculum)]
+    callbacks: list[TrainerCallback] = [
+        PrintCallback(),
+        JSONLLogCallback(OUTPUT_DIR / "logs"),
+        CurriculumCallback(curriculum),
+    ]
 
     trainer = RLTrainer(
         model=model,
