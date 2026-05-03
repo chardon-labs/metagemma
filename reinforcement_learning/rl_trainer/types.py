@@ -105,7 +105,6 @@ class StepMetrics:
     grad_norm: float
     grad_clip_scale: float
     reward_function_means: dict[str, float]
-    diagnostics: dict[str, float] | None = None
     rollout_sync_stats: RolloutSyncStats | None = None
     timings: StepTimings | None = None
 

@@ -9,7 +9,7 @@ class SudokuCurriculum:
     difficulty: float = 0.35
     min_difficulty: float = 0.1
     max_difficulty: float = 1.0
-    window: int = 20
+    window: int = 10
     history: list[dict[str, float]] = field(default_factory=list)
 
     def update(self, metrics: dict[str, float]) -> None:
@@ -20,9 +20,9 @@ class SudokuCurriculum:
         averaged = self._averaged_metrics()
         exact = averaged.get("exact_solution", 0.0)
 
-        if exact >= 0.8:
+        if exact >= 0.7:
             self.difficulty = min(self.max_difficulty, self.difficulty + 0.03)
-        elif exact <= 0.2:
+        elif exact <= 0.3:
             self.difficulty = max(self.min_difficulty, self.difficulty - 0.05)
 
     def _averaged_metrics(self) -> dict[str, float]:

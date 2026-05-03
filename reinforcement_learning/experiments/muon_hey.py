@@ -6,7 +6,7 @@ from typing import Any
 import torch
 from unsloth import FastVisionModel
 
-from rl_trainer import GRPOAlgorithmConfig, JSONLLogCallback, MuonOptimizerConfig, PrintCallback, RLTrainer, RLTrainerConfig
+from rl_trainer import JSONLLogCallback, MuonOptimizerConfig, PrintCallback, ReinforceAlgorithmConfig, RLTrainer, RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
 from rl_trainer.types import RewardBatch
 
@@ -24,7 +24,7 @@ DATASET_SIZE = 1000
 MAX_STEPS = 100
 OUTPUT_DIR = Path("outputs/muon_hey")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
-MUON_LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-5
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -101,8 +101,12 @@ def build_training_config() -> RLTrainerConfig:
         max_steps=MAX_STEPS,
         save_steps=0,
         output_dir=OUTPUT_DIR,
-        optimizer=MuonOptimizerConfig(learning_rate=MUON_LEARNING_RATE, weight_decay=0.0),
-        algorithm=GRPOAlgorithmConfig(),
+        optimizer=MuonOptimizerConfig(
+            learning_rate=LEARNING_RATE,
+            weight_decay=0.0,
+            adjust_lr_fn="match_rms_adamw",
+        ),
+        algorithm=ReinforceAlgorithmConfig(),
         temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,
@@ -116,7 +120,8 @@ def build_training_config() -> RLTrainerConfig:
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "muon_hey_config "
-        f"generations={config.num_generations} lr={config.learning_rate:.2e} "
+        f"generations={config.num_generations} lr={LEARNING_RATE:.2e} "
+        "muon_adjust_lr=match_rms_adamw "
         f"backward_microbatch={config.backward_microbatch_size} "
         f"temperature={config.temperature:.2f} max_completion={config.max_completion_length} "
         f"thinking={ENABLE_THINKING} mask_truncated={config.mask_truncated_completions} "

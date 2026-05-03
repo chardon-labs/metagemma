@@ -1,7 +1,7 @@
 [project]
 name = "reinforcement-learning"
 version = "0.1.0"
-description = "Unsloth GRPO training for Gemma 4 E2B-it Sudoku reinforcement learning."
+description = "Unsloth REINFORCE training for Gemma 4 E2B-it Sudoku reinforcement learning."
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "bitsandbytes",

@@ -5,7 +5,7 @@ from typing import Any
 from unsloth import FastVisionModel
 import torch
 
-from rl_trainer import GRPOAlgorithmConfig, JSONLLogCallback, MuonOptimizerConfig, PrintCallback, RLTrainer, RLTrainerConfig
+from rl_trainer import JSONLLogCallback, MuonOptimizerConfig, PrintCallback, ReinforceAlgorithmConfig, RLTrainer, RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
 from rl_trainer.types import CompletionRecord, StepMetrics
 from tasks.sudoku import SUDOKU_REWARD_FUNCTIONS, SinglePuzzleDataset, build_sudoku_prompt, generate_puzzle
@@ -14,7 +14,7 @@ from tasks.sudoku.types import SudokuPuzzle
 from tasks.sudoku.validation import exact_match
 
 MODEL_NAME = "unsloth/gemma-4-E2B-it"
-MAX_SEQ_LENGTH = 8192
+MAX_SEQ_LENGTH = 2048
 MAX_COMPLETION_LENGTH = 2048
 RANDOM_STATE = 3407
 LOAD_IN_4BIT = False
@@ -34,7 +34,7 @@ DATASET_SIZE = 1000
 MAX_STEPS = 300
 OUTPUT_DIR = Path("outputs/muon_single")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
-MUON_LEARNING_RATE = 1e-5
+LEARNING_RATE = 1e-5
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -70,8 +70,12 @@ def build_training_config() -> RLTrainerConfig:
         max_steps=MAX_STEPS,
         save_steps=0,
         output_dir=OUTPUT_DIR,
-        optimizer=MuonOptimizerConfig(learning_rate=MUON_LEARNING_RATE, weight_decay=0.0),
-        algorithm=GRPOAlgorithmConfig(),
+        optimizer=MuonOptimizerConfig(
+            learning_rate=LEARNING_RATE,
+            weight_decay=0.0,
+            adjust_lr_fn="match_rms_adamw",
+        ),
+        algorithm=ReinforceAlgorithmConfig(),
         temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,
@@ -152,7 +156,8 @@ def evaluate_puzzle(
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "muon_single_config "
-        f"generations={config.num_generations} lr={config.learning_rate:.2e} "
+        f"generations={config.num_generations} lr={LEARNING_RATE:.2e} "
+        "muon_adjust_lr=match_rms_adamw "
         f"backward_microbatch={config.backward_microbatch_size} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "
         f"max_completion={config.max_completion_length} "

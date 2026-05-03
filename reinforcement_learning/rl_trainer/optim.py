@@ -110,6 +110,7 @@ def build_muon(
                 momentum=config.momentum,
                 nesterov=config.nesterov,
                 eps=config.epsilon,
+                adjust_lr_fn=config.adjust_lr_fn,
             )
         )
     if adamw_parameters:

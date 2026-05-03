@@ -6,9 +6,9 @@ from unsloth import FastVisionModel
 
 from rl_trainer import (
     AdamWOptimizerConfig,
-    GRPOAlgorithmConfig,
     JSONLLogCallback,
     PrintCallback,
+    ReinforceAlgorithmConfig,
     RLTrainer,
     RLTrainerConfig,
     TrainerCallback,
@@ -68,7 +68,7 @@ def build_training_config() -> RLTrainerConfig:
         save_steps=0,
         output_dir=OUTPUT_DIR,
         optimizer=AdamWOptimizerConfig(learning_rate=5e-6, weight_decay=0.001),
-        algorithm=GRPOAlgorithmConfig(),
+        algorithm=ReinforceAlgorithmConfig(),
         temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,

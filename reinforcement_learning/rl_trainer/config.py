@@ -4,18 +4,11 @@ from typing import Literal, TypeAlias
 
 
 @dataclass(frozen=True)
-class GRPOAlgorithmConfig:
-    name: Literal["grpo"] = "grpo"
+class ReinforceAlgorithmConfig:
+    name: Literal["reinforce"] = "reinforce"
 
 
-@dataclass(frozen=True)
-class TPOAlgorithmConfig:
-    eta: float = 1.0
-    optimization_epochs: int = 4
-    name: Literal["tpo"] = "tpo"
-
-
-AlgorithmConfig: TypeAlias = GRPOAlgorithmConfig | TPOAlgorithmConfig
+AlgorithmConfig: TypeAlias = ReinforceAlgorithmConfig
 
 
 @dataclass(frozen=True)
@@ -41,6 +34,7 @@ class MuonOptimizerConfig:
     momentum: float = 0.95
     nesterov: bool = True
     epsilon: float = 1e-7
+    adjust_lr_fn: Literal["original", "match_rms_adamw"] | None = None
     adamw_learning_rate: float | None = None
     adamw_weight_decay: float = 0.0
     adamw_epsilon: float = 1e-8
@@ -62,7 +56,7 @@ class RLTrainerConfig:
     save_steps: int
     output_dir: Path
     optimizer: OptimizerConfig
-    algorithm: AlgorithmConfig = field(default_factory=GRPOAlgorithmConfig)
+    algorithm: AlgorithmConfig = field(default_factory=ReinforceAlgorithmConfig)
     backward_microbatch_size: int | None = None
     temperature: float = 1.0
     top_p: float = 1.0

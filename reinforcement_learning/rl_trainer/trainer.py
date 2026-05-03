@@ -11,7 +11,7 @@ import torch
 
 from rl_trainer.advantages import group_relative_advantages
 from rl_trainer.callbacks import PrintCallback, TrainerCallback
-from rl_trainer.config import GRPOAlgorithmConfig, RLTrainerConfig, TPOAlgorithmConfig
+from rl_trainer.config import ReinforceAlgorithmConfig, RLTrainerConfig
 from rl_trainer.data import iter_batches, make_prompt_batch
 from rl_trainer.generation import TransformersRolloutEngine
 from rl_trainer.logprobs import policy_logprobs
@@ -65,10 +65,6 @@ class RLTrainer:
         self.config = config
         if config.backward_microbatch_size is not None and config.backward_microbatch_size <= 0:
             raise ValueError("backward_microbatch_size must be positive when set.")
-        if isinstance(config.algorithm, TPOAlgorithmConfig) and config.algorithm.optimization_epochs <= 0:
-            raise ValueError("TPO optimization_epochs must be positive.")
-        if isinstance(config.algorithm, TPOAlgorithmConfig) and config.gradient_accumulation_steps != 1:
-            raise ValueError("TPO currently requires gradient_accumulation_steps=1.")
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
         self.rollout_engine = rollout_engine or TransformersRolloutEngine(model, tokenizer, config, self.device)
@@ -102,10 +98,6 @@ class RLTrainer:
 
     def _train_loop(self, batches: Iterator[list[TrainingExample]]) -> None:
         while self.state.step < self.config.max_steps:
-            if isinstance(self.config.algorithm, TPOAlgorithmConfig):
-                self._train_tpo_step(next(batches))
-                continue
-
             accumulated_loss = 0.0
             latest_metrics: StepMetrics | None = None
             accumulated_timings = StepTimings(
@@ -143,8 +135,8 @@ class RLTrainer:
                 self.save_checkpoint(self.config.output_dir / f"checkpoint-{self.state.step}")
 
     def _train_microbatch(self, examples: list[TrainingExample]) -> _MicrobatchResult:
-        if not isinstance(self.config.algorithm, GRPOAlgorithmConfig):
-            raise TypeError("_train_microbatch is only used for GRPO training.")
+        if not isinstance(self.config.algorithm, ReinforceAlgorithmConfig):
+            raise TypeError("_train_microbatch is only used for REINFORCE training.")
 
         microbatch_start = perf_counter()
         prompt_batch = make_prompt_batch(examples)
@@ -200,79 +192,6 @@ class RLTrainer:
             ),
         )
 
-    def _train_tpo_step(self, examples: list[TrainingExample]) -> None:
-        if not isinstance(self.config.algorithm, TPOAlgorithmConfig):
-            raise TypeError("_train_tpo_step is only used for TPO training.")
-
-        microbatch_start = perf_counter()
-        prompt_batch = make_prompt_batch(examples)
-
-        rollout_start = perf_counter()
-        rollout = self.rollout_engine.generate(prompt_batch)
-        rollout_seconds = perf_counter() - rollout_start
-        if self.config.empty_cache_steps is not None:
-            self._empty_cuda_cache()
-
-        reward_start = perf_counter()
-        reward_result = asyncio.run(
-            self._score(
-                prompt_batch,
-                rollout.completions,
-                rollout.completion_ids,
-                rollout.completion_mask,
-            )
-        )
-        reward_seconds = perf_counter() - reward_start
-        loss_mask = self._loss_mask(rollout.completion_ids, rollout.completion_mask)
-        target, tpo_diagnostics = self._tpo_target(rollout=rollout, reward_scores=reward_result.total, loss_mask=loss_mask)
-        advantages = group_relative_advantages(reward_result.total, self.config.num_generations)
-
-        epoch_losses: list[float] = []
-        backward_seconds = 0.0
-        optimizer_seconds = 0.0
-        grad_norm = torch.tensor(0.0, device=self.device)
-        for _ in range(self.config.algorithm.optimization_epochs):
-            self.optimizer.zero_grad(set_to_none=True)
-            backward_start = perf_counter()
-            loss = self._backward_tpo_epoch(rollout=rollout, target=target, loss_mask=loss_mask)
-            backward_seconds += perf_counter() - backward_start
-            optimizer_start = perf_counter()
-            grad_norm = self._optimizer_update()
-            optimizer_seconds += perf_counter() - optimizer_start
-            epoch_losses.append(loss)
-
-        self.scheduler.step()
-        self.optimizer.zero_grad(set_to_none=True)
-        self.state.step += 1
-        if self.config.empty_cache_steps is not None and self.state.step % self.config.empty_cache_steps == 0:
-            self._empty_cuda_cache()
-        self._sync_rollout_engine()
-
-        if self._should_log():
-            self._log_completions(prompt_batch, rollout.completions, reward_result.total, advantages.advantages)
-
-        self.state.examples_seen += len(prompt_batch.examples)
-        metrics = self._metrics(
-            loss=sum(epoch_losses) / len(epoch_losses),
-            reward_result=reward_result,
-            completion_mask=rollout.completion_mask,
-            loss_mask=loss_mask,
-            diagnostics=tpo_diagnostics,
-        )
-        timings = StepTimings(
-            rollout_seconds=rollout_seconds,
-            reward_seconds=reward_seconds,
-            backward_seconds=backward_seconds,
-            optimizer_seconds=optimizer_seconds,
-            microbatch_seconds=perf_counter() - microbatch_start,
-        )
-        self._emit_step_metrics(
-            accumulated_loss=metrics.loss,
-            latest_metrics=metrics,
-            grad_norm=grad_norm,
-            timings=timings,
-        )
-
     def _backward_rollout_chunks(
         self,
         *,
@@ -308,71 +227,6 @@ class RLTrainer:
             accumulated_loss += float(loss_output.loss.detach().cpu())
 
         return accumulated_loss
-
-    def _tpo_target(
-        self,
-        *,
-        rollout: RolloutBatch,
-        reward_scores: torch.Tensor,
-        loss_mask: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        if not isinstance(self.config.algorithm, TPOAlgorithmConfig):
-            raise TypeError("_tpo_target is only used for TPO training.")
-
-        self.model.eval()
-        with torch.no_grad():
-            old_log_scores = self._sequence_log_scores(rollout=rollout, mask=loss_mask)
-
-        grouped_old_log_scores = old_log_scores.view(-1, self.config.num_generations)
-        grouped_scores = reward_scores.view(-1, self.config.num_generations)
-        centered = grouped_scores - grouped_scores.mean(dim=1, keepdim=True)
-        std = centered.std(dim=1, unbiased=False, keepdim=True)
-        skill = torch.where(std > 1e-6, centered / std.clamp(min=1e-6), torch.zeros_like(centered))
-        target = torch.softmax(
-            torch.log_softmax(grouped_old_log_scores, dim=1) + skill / self.config.algorithm.eta,
-            dim=1,
-        ).detach()
-        entropy = -(target * target.clamp_min(1e-12).log()).sum(dim=1)
-        effective_candidates = entropy.exp()
-        diagnostics = {
-            "tpo_target_entropy": float(entropy.mean().detach().cpu()),
-            "tpo_target_eff_k": float(effective_candidates.mean().detach().cpu()),
-            "tpo_old_log_score_std": float(grouped_old_log_scores.std(dim=1, unbiased=False).mean().detach().cpu()),
-            "tpo_skill_std": float(skill.std(dim=1, unbiased=False).mean().detach().cpu()),
-        }
-        return target, diagnostics
-
-    def _backward_tpo_epoch(
-        self,
-        *,
-        rollout: RolloutBatch,
-        target: torch.Tensor,
-        loss_mask: torch.Tensor,
-    ) -> float:
-        self.model.train()
-        current_log_scores = self._sequence_log_scores(rollout=rollout, mask=loss_mask)
-        grouped_current_log_scores = current_log_scores.view(-1, self.config.num_generations)
-        loss = -(target * torch.log_softmax(grouped_current_log_scores, dim=1)).sum(dim=1).mean()
-        self._assert_finite_tensor("TPO loss", loss)
-        loss.backward()
-        return float(loss.detach().cpu())
-
-    def _sequence_log_scores(self, *, rollout: RolloutBatch, mask: torch.Tensor) -> torch.Tensor:
-        chunk_size = self.config.backward_microbatch_size or rollout.completion_ids.shape[0]
-        scores: list[torch.Tensor] = []
-        for start in range(0, rollout.completion_ids.shape[0], chunk_size):
-            stop = min(start + chunk_size, rollout.completion_ids.shape[0])
-            current_logprobs = policy_logprobs(
-                self.model,
-                rollout.prompt_ids[start:stop],
-                rollout.prompt_attention_mask[start:stop],
-                rollout.completion_ids[start:stop],
-                rollout.completion_mask[start:stop],
-                self.config.temperature,
-            )
-            self._assert_finite_tensor("sequence logprobs", current_logprobs)
-            scores.append((current_logprobs * mask[start:stop]).sum(dim=1))
-        return torch.cat(scores, dim=0)
 
     def _optimizer_step(self) -> torch.Tensor:
         grad_norm = self._optimizer_update()
@@ -490,7 +344,6 @@ class RLTrainer:
         reward_result: RewardResult,
         completion_mask: torch.Tensor,
         loss_mask: torch.Tensor,
-        diagnostics: dict[str, float] | None = None,
     ) -> StepMetrics:
         reward_function_means = {
             name: float(torch.nanmean(reward_result.per_function[:, index]).detach().cpu())
@@ -510,7 +363,6 @@ class RLTrainer:
             grad_norm=0.0,
             grad_clip_scale=1.0,
             reward_function_means=reward_function_means,
-            diagnostics=diagnostics,
         )
 
     def _log_completions(

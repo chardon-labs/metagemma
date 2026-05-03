@@ -5,7 +5,7 @@ from typing import Any
 from unsloth import FastVisionModel
 import torch
 
-from rl_trainer import AdamWOptimizerConfig, GRPOAlgorithmConfig, JSONLLogCallback, PrintCallback, RLTrainer, RLTrainerConfig
+from rl_trainer import AdamWOptimizerConfig, JSONLLogCallback, PrintCallback, ReinforceAlgorithmConfig, RLTrainer, RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
 from rl_trainer.types import CompletionRecord, StepMetrics
 from tasks.sudoku import SUDOKU_REWARD_FUNCTIONS, SinglePuzzleDataset, build_sudoku_prompt, generate_puzzle
@@ -70,7 +70,7 @@ def build_training_config() -> RLTrainerConfig:
         save_steps=0,
         output_dir=OUTPUT_DIR,
         optimizer=AdamWOptimizerConfig(learning_rate=5e-6, weight_decay=0.0),
-        algorithm=GRPOAlgorithmConfig(),
+        algorithm=ReinforceAlgorithmConfig(),
         temperature=1.0,
         mask_truncated_completions=False,
         max_grad_norm=1.0,

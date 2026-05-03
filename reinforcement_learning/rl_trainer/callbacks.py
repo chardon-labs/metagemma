@@ -89,19 +89,9 @@ class PrintCallback:
             f"len={latest.completion_length_mean:.1f} active={latest.active_completion_length_mean:.1f}  "
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
             f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
-            f"clip={latest.grad_clip_scale:.2f}{self._diagnostics_summary(latest)}"
+            f"clip={latest.grad_clip_scale:.2f}"
             f"{self._timing_summary(latest)}{self._sync_summary(latest)}"
         )
-
-    def _diagnostics_summary(self, metrics: StepMetrics) -> str:
-        diagnostics = metrics.diagnostics
-        if diagnostics is None:
-            return ""
-        tpo_eff_k = diagnostics.get("tpo_target_eff_k")
-        tpo_log_std = diagnostics.get("tpo_old_log_score_std")
-        if tpo_eff_k is None or tpo_log_std is None:
-            return ""
-        return f" tpo_eff_k={tpo_eff_k:.1f} old_log_std={tpo_log_std:.1f}"
 
     def _timing_summary(self, metrics: StepMetrics) -> str:
         timings = metrics.timings
