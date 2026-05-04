@@ -46,6 +46,16 @@ class _MicrobatchResult:
     timings: StepTimings
     grad_norm: torch.Tensor | None = None
     grpo_clip_ratio: float | None = None
+    has_gradients: bool = True
+
+
+@dataclass(frozen=True)
+class _GroupFilterResult:
+    prompt_batch: PromptBatch
+    rollout: RolloutBatch
+    reward_result: RewardResult
+    groups_kept: int
+    groups_total: int
 
 
 class RLTrainer:
@@ -149,6 +159,7 @@ class RLTrainer:
 
             accumulated_loss = 0.0
             latest_metrics: StepMetrics | None = None
+            accumulated_has_gradients = False
             accumulated_timings = StepTimings(
                 rollout_seconds=0.0,
                 reward_seconds=0.0,
@@ -162,10 +173,18 @@ class RLTrainer:
                 result = self._train_microbatch(next(batches))
                 accumulated_loss += result.loss
                 latest_metrics = result.metrics
+                accumulated_has_gradients = accumulated_has_gradients or result.has_gradients
                 accumulated_timings = self._add_timings(accumulated_timings, result.timings)
 
             optimizer_start = perf_counter()
-            grad_norm = self._optimizer_step()
+            if accumulated_has_gradients:
+                grad_norm = self._optimizer_step()
+            else:
+                self.optimizer.zero_grad(set_to_none=True)
+                self.state.step += 1
+                if self.config.empty_cache_steps is not None and self.state.step % self.config.empty_cache_steps == 0:
+                    self._empty_cuda_cache()
+                grad_norm = torch.tensor(0.0, device=self.device)
             optimizer_seconds = perf_counter() - optimizer_start
             accumulated_timings = StepTimings(
                 rollout_seconds=accumulated_timings.rollout_seconds,
@@ -208,18 +227,24 @@ class RLTrainer:
             )
         )
         reward_seconds = perf_counter() - reward_start
+        group_filter = self._filter_zero_variance_reward_groups(prompt_batch, rollout, reward_result)
+        prompt_batch = group_filter.prompt_batch
+        rollout = group_filter.rollout
+        reward_result = group_filter.reward_result
         advantages = group_relative_advantages(reward_result.total, self.config.num_generations)
 
         backward_start = perf_counter()
         self.model.train()
         loss_mask = self._loss_mask(rollout.completion_ids, rollout.completion_mask)
         loss_normalizer = loss_mask.sum().clamp(min=1.0)
-        loss = self._backward_rollout_chunks(
-            rollout=rollout,
-            advantages=advantages.advantages.detach(),
-            loss_mask=loss_mask,
-            loss_normalizer=loss_normalizer,
-        )
+        loss = 0.0
+        if group_filter.groups_kept > 0:
+            loss = self._backward_rollout_chunks(
+                rollout=rollout,
+                advantages=advantages.advantages.detach(),
+                loss_mask=loss_mask,
+                loss_normalizer=loss_normalizer,
+            )
         backward_seconds = perf_counter() - backward_start
 
         if self._should_log():
@@ -233,6 +258,8 @@ class RLTrainer:
                 reward_result=reward_result,
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
+                reward_groups_kept=group_filter.groups_kept,
+                reward_groups_total=group_filter.groups_total,
             ),
             timings=StepTimings(
                 rollout_seconds=rollout_seconds,
@@ -241,6 +268,7 @@ class RLTrainer:
                 optimizer_seconds=0.0,
                 microbatch_seconds=perf_counter() - microbatch_start,
             ),
+            has_gradients=group_filter.groups_kept > 0,
         )
 
     def _train_grpo_batch(self, examples: list[TrainingExample]) -> _MicrobatchResult:
@@ -267,12 +295,20 @@ class RLTrainer:
             )
         )
         reward_seconds = perf_counter() - reward_start
+        group_filter = self._filter_zero_variance_reward_groups(prompt_batch, rollout, reward_result)
+        prompt_batch = group_filter.prompt_batch
+        rollout = group_filter.rollout
+        reward_result = group_filter.reward_result
         advantages = group_relative_advantages(reward_result.total, self.config.num_generations)
 
-        old_logprobs_start = perf_counter()
-        old_logprobs = self._rollout_logprobs(rollout)
-        old_logprobs_seconds = perf_counter() - old_logprobs_start
         loss_mask = self._loss_mask(rollout.completion_ids, rollout.completion_mask)
+        old_logprobs_seconds = 0.0
+        if group_filter.groups_kept > 0:
+            old_logprobs_start = perf_counter()
+            old_logprobs = self._rollout_logprobs(rollout)
+            old_logprobs_seconds = perf_counter() - old_logprobs_start
+        else:
+            old_logprobs = torch.empty_like(rollout.completion_mask)
         backward_seconds = 0.0
 
         if self._should_log():
@@ -288,7 +324,7 @@ class RLTrainer:
         epsilon_high = algorithm.epsilon if algorithm.epsilon_high is None else algorithm.epsilon_high
 
         self.model.train()
-        for _ in range(algorithm.num_iterations):
+        for _ in range(algorithm.num_iterations if group_filter.groups_kept > 0 else 0):
             indices = torch.randperm(trainable_count, generator=self.minibatch_generator).to(self.device)
             for start in range(0, trainable_count, mini_batch_size):
                 stop = min(start + mini_batch_size, trainable_count)
@@ -322,9 +358,10 @@ class RLTrainer:
         if self.config.empty_cache_steps is not None and self.state.step % self.config.empty_cache_steps == 0:
             self._empty_cuda_cache()
 
-        sync_start = perf_counter()
-        self._sync_rollout_engine()
-        optimizer_seconds += perf_counter() - sync_start
+        if optimizer_update_count > 0:
+            sync_start = perf_counter()
+            self._sync_rollout_engine()
+            optimizer_seconds += perf_counter() - sync_start
 
         update_count = max(1, optimizer_update_count)
         self.state.examples_seen += len(prompt_batch.examples)
@@ -338,6 +375,8 @@ class RLTrainer:
                 reward_result=reward_result,
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
+                reward_groups_kept=group_filter.groups_kept,
+                reward_groups_total=group_filter.groups_total,
             ),
             timings=StepTimings(
                 rollout_seconds=rollout_seconds,
@@ -349,6 +388,7 @@ class RLTrainer:
             ),
             grad_norm=average_grad_norm,
             grpo_clip_ratio=average_clip_ratio,
+            has_gradients=optimizer_update_count > 0,
         )
 
     def _backward_rollout_chunks(
@@ -563,6 +603,65 @@ class RLTrainer:
         )
         return await score_rewards(self.reward_functions, reward_batch, self.device)
 
+    def _filter_zero_variance_reward_groups(
+        self,
+        prompt_batch: PromptBatch,
+        rollout: RolloutBatch,
+        reward_result: RewardResult,
+    ) -> _GroupFilterResult:
+        grouped_rewards = reward_result.total.view(-1, self.config.num_generations)
+        keep_groups = grouped_rewards.std(dim=1).gt(0.0)
+        groups_total = int(keep_groups.numel())
+        groups_kept = int(keep_groups.sum().detach().cpu())
+
+        if groups_kept == groups_total or groups_kept == 0:
+            return _GroupFilterResult(
+                prompt_batch=prompt_batch,
+                rollout=rollout,
+                reward_result=reward_result,
+                groups_kept=groups_kept,
+                groups_total=groups_total,
+            )
+
+        keep_group_list = [bool(keep) for keep in keep_groups.detach().cpu().tolist()]
+        keep_rows = keep_groups.repeat_interleave(self.config.num_generations)
+        keep_row_list = [bool(keep) for keep in keep_rows.detach().cpu().tolist()]
+        filtered_prompt_batch = PromptBatch(
+            examples=[
+                example
+                for example, keep in zip(prompt_batch.examples, keep_group_list, strict=True)
+                if keep
+            ],
+            prompts=[
+                prompt
+                for prompt, keep in zip(prompt_batch.prompts, keep_group_list, strict=True)
+                if keep
+            ],
+        )
+        filtered_rollout = RolloutBatch(
+            prompt_ids=rollout.prompt_ids[keep_rows],
+            prompt_attention_mask=rollout.prompt_attention_mask[keep_rows],
+            completion_ids=rollout.completion_ids[keep_rows],
+            completion_mask=rollout.completion_mask[keep_rows],
+            completions=[
+                completion
+                for completion, keep in zip(rollout.completions, keep_row_list, strict=True)
+                if keep
+            ],
+        )
+        filtered_reward_result = RewardResult(
+            per_function=reward_result.per_function[keep_rows],
+            total=reward_result.total[keep_rows],
+            names=reward_result.names,
+        )
+        return _GroupFilterResult(
+            prompt_batch=filtered_prompt_batch,
+            rollout=filtered_rollout,
+            reward_result=filtered_reward_result,
+            groups_kept=groups_kept,
+            groups_total=groups_total,
+        )
+
     def _loss_mask(self, completion_ids: torch.Tensor, completion_mask: torch.Tensor) -> torch.Tensor:
         if not self.config.mask_truncated_completions:
             return completion_mask
@@ -584,6 +683,8 @@ class RLTrainer:
         reward_result: RewardResult,
         completion_mask: torch.Tensor,
         loss_mask: torch.Tensor,
+        reward_groups_kept: int | None = None,
+        reward_groups_total: int | None = None,
     ) -> StepMetrics:
         reward_function_means = {
             name: float(torch.nanmean(reward_result.per_function[:, index]).detach().cpu())
@@ -603,6 +704,8 @@ class RLTrainer:
             grad_norm=0.0,
             grad_clip_scale=1.0,
             reward_function_means=reward_function_means,
+            reward_groups_kept=reward_groups_kept,
+            reward_groups_total=reward_groups_total,
         )
 
     def _log_completions(

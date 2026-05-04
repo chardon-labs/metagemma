@@ -90,8 +90,14 @@ class PrintCallback:
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
             f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
             f"clip={latest.grad_clip_scale:.2f}"
+            f"{self._reward_group_summary(latest)}"
             f"{self._grpo_summary(latest)}{self._timing_summary(latest)}{self._sync_summary(latest)}"
         )
+
+    def _reward_group_summary(self, metrics: StepMetrics) -> str:
+        if metrics.reward_groups_kept is None or metrics.reward_groups_total is None:
+            return ""
+        return f" groups={metrics.reward_groups_kept}/{metrics.reward_groups_total}"
 
     def _grpo_summary(self, metrics: StepMetrics) -> str:
         if metrics.grpo_clip_ratio is None:

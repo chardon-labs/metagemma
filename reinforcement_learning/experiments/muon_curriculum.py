@@ -60,9 +60,9 @@ def build_training_config() -> RLTrainerConfig:
     return RLTrainerConfig(
         warmup_ratio=0.03,
         logging_steps=1,
-        batch_size=1,
+        batch_size=8,
         gradient_accumulation_steps=1,
-        num_generations=128,
+        num_generations=16,
         backward_microbatch_size=8,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
@@ -107,7 +107,7 @@ def build_vllm_engine(
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "muon_curriculum_config "
-        f"generations={config.num_generations} lr={LEARNING_RATE:.2e} "
+        f"batch_size={config.batch_size} generations={config.num_generations} lr={LEARNING_RATE:.2e} "
         "muon_adjust_lr=match_rms_adamw "
         f"backward_microbatch={config.backward_microbatch_size} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "

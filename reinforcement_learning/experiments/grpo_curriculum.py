@@ -29,7 +29,7 @@ def build_training_config() -> RLTrainerConfig:
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "grpo_curriculum_config "
-        f"generations={config.num_generations} lr={base.LEARNING_RATE:.2e} "
+        f"batch_size={config.batch_size} generations={config.num_generations} lr={base.LEARNING_RATE:.2e} "
         "optimizer=muon muon_adjust_lr=match_rms_adamw "
         f"grpo_epsilon={GRPO_EPSILON:.2f} grpo_mini_batch={GRPO_MINI_BATCH_SIZE} "
         f"backward_microbatch={config.backward_microbatch_size} "

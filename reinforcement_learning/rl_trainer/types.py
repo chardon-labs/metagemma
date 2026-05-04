@@ -126,6 +126,8 @@ class StepMetrics:
     rollout_sync_stats: RolloutSyncStats | None = None
     timings: StepTimings | None = None
     grpo_clip_ratio: float | None = None
+    reward_groups_kept: int | None = None
+    reward_groups_total: int | None = None
 
 
 @dataclass(frozen=True)
