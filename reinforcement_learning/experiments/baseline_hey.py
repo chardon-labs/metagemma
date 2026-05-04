@@ -1,14 +1,7 @@
-import contextlib
-import io
 from pathlib import Path
-from typing import Any
 
-import torch
-from unsloth import FastVisionModel
-
+from experiments.utils.support import HeyDataset, build_vllm_engine, load_model_and_tokenizer, short_completion_reward
 from rl_trainer import AdamWOptimizerConfig, JSONLLogCallback, PrintCallback, ReinforceAlgorithmConfig, RLTrainer, RLTrainerConfig
-from rl_trainer.generation import VLLMRolloutEngine
-from rl_trainer.types import RewardBatch
 
 MODEL_NAME = "unsloth/gemma-4-E2B-it"
 MAX_SEQ_LENGTH = 8192
@@ -31,61 +24,6 @@ VLLM_ENFORCE_EAGER = True
 VLLM_SYNC_STEPS = 1
 VLLM_SYNC_BACKEND = "inprocess"
 VLLM_SYNC_CHUNK_BYTES = 8 * 1024 * 1024 * 1024
-
-
-def build_prompt() -> list[dict[str, object]]:
-    return [{"role": "user", "content": [{"type": "text", "text": PROMPT_TEXT}]}]
-
-
-class HeyDataset:
-    def __init__(self, *, size: int) -> None:
-        self.size = size
-
-    def __len__(self) -> int:
-        return self.size
-
-    def __getitem__(self, _index: int) -> dict[str, object]:
-        return {"prompt": build_prompt()}
-
-
-async def short_completion_reward(batch: RewardBatch) -> list[float | None]:
-    return [-sum(mask) for mask in batch.completion_mask]
-
-
-def load_model_and_tokenizer() -> tuple[Any, Any]:
-    with contextlib.redirect_stdout(io.StringIO()):
-        model, tokenizer = FastVisionModel.from_pretrained(
-            model_name=MODEL_NAME,
-            max_seq_length=MAX_SEQ_LENGTH,
-            load_in_4bit=LOAD_IN_4BIT,
-            fast_inference=FAST_INFERENCE,
-            full_finetuning=FULL_FINETUNING,
-        )
-    if FULL_FINETUNING:
-        for parameter in model.parameters():
-            parameter.requires_grad_(True)
-    return model, tokenizer
-
-
-def build_vllm_engine(
-    model_name_or_path: str,
-    tokenizer: Any,
-    config: RLTrainerConfig,
-    *,
-    sync_steps: int = 0,
-) -> VLLMRolloutEngine:
-    return VLLMRolloutEngine(
-        model_name_or_path=model_name_or_path,
-        tokenizer=tokenizer,
-        config=config,
-        device=torch.device("cuda"),
-        gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-        tensor_parallel_size=VLLM_TENSOR_PARALLEL_SIZE,
-        enforce_eager=VLLM_ENFORCE_EAGER,
-        sync_steps=sync_steps,
-        sync_chunk_bytes=VLLM_SYNC_CHUNK_BYTES,
-        sync_backend=VLLM_SYNC_BACKEND,
-    )
 
 
 def build_training_config() -> RLTrainerConfig:
@@ -127,10 +65,27 @@ def print_training_config(config: RLTrainerConfig) -> None:
 def main() -> None:
     config = build_training_config()
     print_training_config(config)
-    model, tokenizer = load_model_and_tokenizer()
-    rollout_engine = build_vllm_engine(MODEL_NAME, tokenizer, config, sync_steps=VLLM_SYNC_STEPS)
+    model, tokenizer = load_model_and_tokenizer(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=LOAD_IN_4BIT,
+        fast_inference=FAST_INFERENCE,
+        full_finetuning=FULL_FINETUNING,
+        quiet=True,
+    )
+    rollout_engine = build_vllm_engine(
+        model_name_or_path=MODEL_NAME,
+        tokenizer=tokenizer,
+        config=config,
+        sync_steps=VLLM_SYNC_STEPS,
+        gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
+        tensor_parallel_size=VLLM_TENSOR_PARALLEL_SIZE,
+        enforce_eager=VLLM_ENFORCE_EAGER,
+        sync_chunk_bytes=VLLM_SYNC_CHUNK_BYTES,
+        sync_backend=VLLM_SYNC_BACKEND,
+    )
 
-    dataset = HeyDataset(size=DATASET_SIZE)
+    dataset = HeyDataset(size=DATASET_SIZE, prompt_text=PROMPT_TEXT)
     trainer = RLTrainer(
         model=model,
         tokenizer=tokenizer,

@@ -1,9 +1,8 @@
 from pathlib import Path
-from typing import Any
 
 import torch
-from unsloth import FastVisionModel
 
+from experiments.utils.support import build_vllm_engine, load_model_and_tokenizer
 from rl_trainer import (
     JSONLLogCallback,
     MuonOptimizerConfig,
@@ -13,7 +12,6 @@ from rl_trainer import (
     RLTrainerConfig,
     TrainerCallback,
 )
-from rl_trainer.generation import VLLMRolloutEngine
 from tasks.sudoku import (
     SUDOKU_REWARD_FUNCTIONS,
     CurriculumCallback,
@@ -40,20 +38,6 @@ VLLM_ENFORCE_EAGER = True
 VLLM_SYNC_STEPS = 1
 VLLM_SYNC_BACKEND = "inprocess"
 VLLM_SYNC_CHUNK_BYTES = 8 * 1024 * 1024 * 1024
-
-
-def load_model_and_tokenizer() -> tuple[Any, Any]:
-    model, tokenizer = FastVisionModel.from_pretrained(
-        model_name=MODEL_NAME,
-        max_seq_length=MAX_SEQ_LENGTH,
-        load_in_4bit=LOAD_IN_4BIT,
-        fast_inference=FAST_INFERENCE,
-        full_finetuning=FULL_FINETUNING,
-    )
-    if FULL_FINETUNING:
-        for parameter in model.parameters():
-            parameter.requires_grad_(True)
-    return model, tokenizer
 
 
 def build_training_config() -> RLTrainerConfig:
@@ -83,27 +67,6 @@ def build_training_config() -> RLTrainerConfig:
     )
 
 
-def build_vllm_engine(
-    model_name_or_path: str,
-    tokenizer: Any,
-    config: RLTrainerConfig,
-    *,
-    sync_steps: int = 0,
-) -> VLLMRolloutEngine:
-    return VLLMRolloutEngine(
-        model_name_or_path=model_name_or_path,
-        tokenizer=tokenizer,
-        config=config,
-        device=torch.device("cuda"),
-        gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
-        tensor_parallel_size=VLLM_TENSOR_PARALLEL_SIZE,
-        enforce_eager=VLLM_ENFORCE_EAGER,
-        sync_steps=sync_steps,
-        sync_chunk_bytes=VLLM_SYNC_CHUNK_BYTES,
-        sync_backend=VLLM_SYNC_BACKEND,
-    )
-
-
 def print_training_config(config: RLTrainerConfig) -> None:
     print(
         "muon_curriculum_config "
@@ -121,8 +84,24 @@ def print_training_config(config: RLTrainerConfig) -> None:
 def main() -> None:
     config = build_training_config()
     print_training_config(config)
-    model, tokenizer = load_model_and_tokenizer()
-    rollout_engine = build_vllm_engine(MODEL_NAME, tokenizer, config, sync_steps=VLLM_SYNC_STEPS)
+    model, tokenizer = load_model_and_tokenizer(
+        model_name=MODEL_NAME,
+        max_seq_length=MAX_SEQ_LENGTH,
+        load_in_4bit=LOAD_IN_4BIT,
+        fast_inference=FAST_INFERENCE,
+        full_finetuning=FULL_FINETUNING,
+    )
+    rollout_engine = build_vllm_engine(
+        model_name_or_path=MODEL_NAME,
+        tokenizer=tokenizer,
+        config=config,
+        sync_steps=VLLM_SYNC_STEPS,
+        gpu_memory_utilization=VLLM_GPU_MEMORY_UTILIZATION,
+        tensor_parallel_size=VLLM_TENSOR_PARALLEL_SIZE,
+        enforce_eager=VLLM_ENFORCE_EAGER,
+        sync_chunk_bytes=VLLM_SYNC_CHUNK_BYTES,
+        sync_backend=VLLM_SYNC_BACKEND,
+    )
     curriculum = SudokuCurriculum()
     dataset = SudokuDataset(
         size=DATASET_SIZE,

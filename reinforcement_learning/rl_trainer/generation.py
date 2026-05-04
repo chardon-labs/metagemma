@@ -9,6 +9,49 @@ from rl_trainer.tensors import completion_mask
 from rl_trainer.types import Completion, PromptBatch, RolloutBatch, RolloutSyncStats, TokenBatch
 
 
+def patch_vllm_gemma4_shared_k_norm() -> None:
+    try:
+        gemma4 = import_module("vllm.model_executor.models.gemma4")
+        gemma4_mm = import_module("vllm.model_executor.models.gemma4_mm")
+    except ImportError:
+        return
+
+    def patch_model_class(model_cls: type[Any]) -> None:
+        if getattr(model_cls, "_unicorn_shared_k_norm_patch", False):
+            return
+
+        original_load_weights = model_cls.load_weights
+
+        def load_weights_with_shared_k_norm(self: Any, weights: Any) -> set[str]:
+            loaded = original_load_weights(self, weights)
+            config = getattr(self, "config", None)
+            if config is None and hasattr(self, "language_model"):
+                config = getattr(self.language_model, "config", None)
+            if config is None:
+                return loaded
+            config = getattr(config, "text_config", config)
+
+            num_hidden_layers = int(getattr(config, "num_hidden_layers", 0) or 0)
+            num_kv_shared_layers = int(getattr(config, "num_kv_shared_layers", 0) or 0)
+            first_shared_layer = num_hidden_layers - num_kv_shared_layers
+            if first_shared_layer < 0 or num_kv_shared_layers <= 0:
+                return loaded
+
+            parameter_names = {name for name, _parameter in self.named_parameters()}
+            for layer_index in range(first_shared_layer, num_hidden_layers):
+                for prefix in ("language_model.model.layers", "model.layers"):
+                    name = f"{prefix}.{layer_index}.self_attn.k_norm.weight"
+                    if name in parameter_names:
+                        loaded.add(name)
+            return loaded
+
+        model_cls.load_weights = load_weights_with_shared_k_norm
+        model_cls._unicorn_shared_k_norm_patch = True
+
+    patch_model_class(getattr(gemma4, "Gemma4ForCausalLM"))
+    patch_model_class(getattr(gemma4_mm, "Gemma4ForConditionalGeneration"))
+
+
 class TransformersRolloutEngine:
     def __init__(self, model: Any, tokenizer: Any, config: RLTrainerConfig, device: torch.device) -> None:
         self.model = model
@@ -125,6 +168,7 @@ class VLLMRolloutEngine:
             raise ValueError(f"Unsupported vLLM sync backend: {self.sync_backend}")
         os.environ.setdefault("VLLM_ENABLE_V1_MULTIPROCESSING", "0")
         vllm = import_module("vllm")
+        patch_vllm_gemma4_shared_k_norm()
         self.llm_cls = getattr(vllm, "LLM")
         self.sampling_params_cls = getattr(vllm, "SamplingParams")
         self.llm = self._build_llm(model_name_or_path)

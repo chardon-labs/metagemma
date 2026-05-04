@@ -18,9 +18,9 @@ dependencies = [
     "triton>=3.4.0",
     "triton-kernels",
     "trl>=0.28.0",
-    "unsloth[base]",
-    "unsloth-zoo[base]",
-    "vllm==0.19.1",
+    "unsloth[base]==2026.4.8",
+    # "unsloth-zoo[base]",
+    "vllm==0.20.0",
 ]
 
 [tool.uv]
