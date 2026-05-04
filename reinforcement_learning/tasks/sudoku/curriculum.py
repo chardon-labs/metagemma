@@ -10,20 +10,42 @@ class SudokuCurriculum:
     min_difficulty: float = 0.1
     max_difficulty: float = 1.0
     window: int = 10
+    score_ema_decay: float = 0.8
+    lower_score_threshold: float = 0.35
+    upper_score_threshold: float = 0.65
+    max_increase: float = 0.03
+    max_decrease: float = 0.03
     history: list[dict[str, float]] = field(default_factory=list)
+    score_ema: float | None = None
+    last_delta: float = 0.0
 
     def update(self, metrics: dict[str, float]) -> None:
         self.history.append(metrics)
         if len(self.history) > self.window:
             self.history = self.history[-self.window :]
 
-        averaged = self._averaged_metrics()
-        exact = averaged.get("exact_solution", 0.0)
+        exact = metrics.get("exact_solution", metrics.get("reward_mean", 0.0))
+        self.score_ema = self._update_score_ema(exact)
+        self.last_delta = self._difficulty_delta(self.score_ema)
+        self.difficulty = min(self.max_difficulty, max(self.min_difficulty, self.difficulty + self.last_delta))
 
-        if exact >= 0.7:
-            self.difficulty = min(self.max_difficulty, self.difficulty + 0.03)
-        elif exact <= 0.3:
-            self.difficulty = max(self.min_difficulty, self.difficulty - 0.05)
+    def _update_score_ema(self, exact_score: float) -> float:
+        if self.score_ema is None:
+            return exact_score
+        return self.score_ema_decay * self.score_ema + (1.0 - self.score_ema_decay) * exact_score
+
+    def _difficulty_delta(self, score: float) -> float:
+        if score >= self.upper_score_threshold:
+            span = max(1e-6, 1.0 - self.upper_score_threshold)
+            scale = min(1.0, (score - self.upper_score_threshold) / span)
+            return self.max_increase * scale
+
+        if score <= self.lower_score_threshold:
+            span = max(1e-6, self.lower_score_threshold)
+            scale = min(1.0, (self.lower_score_threshold - score) / span)
+            return -self.max_decrease * scale
+
+        return 0.0
 
     def _averaged_metrics(self) -> dict[str, float]:
         if not self.history:
@@ -44,7 +66,11 @@ class CurriculumCallback(TrainerCallback):
         reward_metrics = dict(metrics.reward_function_means)
         reward_metrics["reward_mean"] = metrics.reward_mean
         self.curriculum.update(reward_metrics)
-        print(f"curriculum_difficulty={self.curriculum.difficulty:.3f}")
+        score_ema = self.curriculum.score_ema if self.curriculum.score_ema is not None else 0.0
+        print(
+            f"curriculum_difficulty={self.curriculum.difficulty:.3f} "
+            f"score_ema={score_ema:.3f} delta={self.curriculum.last_delta:+.4f}"
+        )
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
         _ = records

@@ -84,12 +84,30 @@ class LossOutput:
 
 
 @dataclass(frozen=True)
+class GRPOLossInput:
+    current_logprobs: torch.Tensor
+    old_logprobs: torch.Tensor
+    advantages: torch.Tensor
+    completion_mask: torch.Tensor
+    epsilon: float
+    epsilon_high: float
+    normalizer: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
+class GRPOLossOutput:
+    loss: torch.Tensor
+    clip_ratio: torch.Tensor
+
+
+@dataclass(frozen=True)
 class StepTimings:
     rollout_seconds: float
     reward_seconds: float
     backward_seconds: float
     optimizer_seconds: float
     microbatch_seconds: float
+    old_logprobs_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -107,6 +125,7 @@ class StepMetrics:
     reward_function_means: dict[str, float]
     rollout_sync_stats: RolloutSyncStats | None = None
     timings: StepTimings | None = None
+    grpo_clip_ratio: float | None = None
 
 
 @dataclass(frozen=True)

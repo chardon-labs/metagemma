@@ -8,7 +8,16 @@ class ReinforceAlgorithmConfig:
     name: Literal["reinforce"] = "reinforce"
 
 
-AlgorithmConfig: TypeAlias = ReinforceAlgorithmConfig
+@dataclass(frozen=True)
+class GRPOAlgorithmConfig:
+    epsilon: float = 0.2
+    epsilon_high: float | None = None
+    num_iterations: int = 1
+    mini_batch_size: int | None = None
+    name: Literal["grpo"] = "grpo"
+
+
+AlgorithmConfig: TypeAlias = ReinforceAlgorithmConfig | GRPOAlgorithmConfig
 
 
 @dataclass(frozen=True)

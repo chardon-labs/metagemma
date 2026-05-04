@@ -11,7 +11,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-from rl_trainer.types import CompletionRecord, StepMetrics
+from rl_trainer.types import CompletionRecord, StepMetrics, StepTimings
 
 MAX_HISTORY = 30
 RECENT_STEPS = 5
@@ -90,8 +90,13 @@ class PrintCallback:
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
             f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
             f"clip={latest.grad_clip_scale:.2f}"
-            f"{self._timing_summary(latest)}{self._sync_summary(latest)}"
+            f"{self._grpo_summary(latest)}{self._timing_summary(latest)}{self._sync_summary(latest)}"
         )
+
+    def _grpo_summary(self, metrics: StepMetrics) -> str:
+        if metrics.grpo_clip_ratio is None:
+            return ""
+        return f" grpo_clip={metrics.grpo_clip_ratio:.3f}"
 
     def _timing_summary(self, metrics: StepMetrics) -> str:
         timings = metrics.timings
@@ -100,8 +105,14 @@ class PrintCallback:
 
         return (
             f"  t=roll:{timings.rollout_seconds:.2f}s "
+            f"{self._old_logprobs_timing(timings)}"
             f"back:{timings.backward_seconds:.2f}s opt:{timings.optimizer_seconds:.2f}s"
         )
+
+    def _old_logprobs_timing(self, timings: StepTimings) -> str:
+        if timings.old_logprobs_seconds <= 0.0:
+            return ""
+        return f"oldlp:{timings.old_logprobs_seconds:.2f}s "
 
     def _sync_summary(self, metrics: StepMetrics) -> str:
         stats = metrics.rollout_sync_stats

@@ -2,6 +2,7 @@ from rl_trainer.callbacks import JSONLLogCallback, PrintCallback, TrainerCallbac
 from rl_trainer.config import (
     AdamW8BitOptimizerConfig,
     AdamWOptimizerConfig,
+    GRPOAlgorithmConfig,
     MuonOptimizerConfig,
     ReinforceAlgorithmConfig,
     RLTrainerConfig,
@@ -13,6 +14,7 @@ __all__ = [
     "AdamW8BitOptimizerConfig",
     "AdamWOptimizerConfig",
     "Completion",
+    "GRPOAlgorithmConfig",
     "JSONLLogCallback",
     "MuonOptimizerConfig",
     "PrintCallback",
