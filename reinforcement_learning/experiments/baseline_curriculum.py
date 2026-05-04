@@ -2,7 +2,12 @@ from pathlib import Path
 
 import torch
 
-from experiments.utils.support import build_vllm_engine, load_model_and_tokenizer
+from experiments.utils.support import (
+    SudokuValidationCallback,
+    build_vllm_engine,
+    load_model_and_tokenizer,
+    load_sudoku_validation_puzzles,
+)
 from rl_trainer import (
     AdamWOptimizerConfig,
     JSONLLogCallback,
@@ -30,6 +35,9 @@ MAX_STEPS = 60
 OUTPUT_DIR = Path("outputs/baseline_curriculum")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
 MAX_COMPLETION_LENGTH = 2048
+VALIDATION_SET_PATH = Path(__file__).resolve().parent / "fixtures" / "sudoku_validation_128.json"
+VALIDATION_STEPS = 20
+VALIDATION_COMPLETIONS_PER_PUZZLE = 1
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -107,6 +115,12 @@ def main() -> None:
     print(dataset[0])
 
     callbacks: list[TrainerCallback] = [
+        SudokuValidationCallback(
+            rollout_engine=rollout_engine,
+            puzzles=load_sudoku_validation_puzzles(VALIDATION_SET_PATH),
+            eval_steps=VALIDATION_STEPS,
+            completions_per_puzzle=VALIDATION_COMPLETIONS_PER_PUZZLE,
+        ),
         PrintCallback(),
         JSONLLogCallback(OUTPUT_DIR / "logs"),
         CurriculumCallback(curriculum),

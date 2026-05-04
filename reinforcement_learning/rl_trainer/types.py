@@ -128,6 +128,7 @@ class StepMetrics:
     grpo_clip_ratio: float | None = None
     reward_groups_kept: int | None = None
     reward_groups_total: int | None = None
+    validation_reward_mean: float | None = None
 
 
 @dataclass(frozen=True)

@@ -1,10 +1,12 @@
 import contextlib
 import io
+import json
 import random
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import torch
-from unsloth import FastVisionModel
 
 from rl_trainer import RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
@@ -13,6 +15,8 @@ from tasks.sudoku import build_sudoku_prompt, generate_puzzle
 from tasks.sudoku.parsing import parse_solution_grid
 from tasks.sudoku.types import SudokuPuzzle
 from tasks.sudoku.validation import exact_match
+
+VLLMPrompt = list[dict[str, object]] | list[dict[str, str | list[dict[str, str]]]]
 
 
 def load_model_and_tokenizer(
@@ -24,6 +28,8 @@ def load_model_and_tokenizer(
     full_finetuning: bool,
     quiet: bool = False,
 ) -> tuple[Any, Any]:
+    from unsloth import FastVisionModel
+
     if quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             model, tokenizer = FastVisionModel.from_pretrained(
@@ -164,6 +170,49 @@ def print_puzzle(puzzle: SudokuPuzzle) -> None:
         print(" ".join(str(cell) for cell in row))
 
 
+def load_sudoku_validation_puzzles(path: Path) -> list[SudokuPuzzle]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    return [
+        SudokuPuzzle(
+            size=int(puzzle["size"]),
+            box_rows=int(puzzle["box_rows"]),
+            box_cols=int(puzzle["box_cols"]),
+            puzzle=[[int(cell) for cell in row] for row in puzzle["puzzle"]],
+            solution=[[int(cell) for cell in row] for row in puzzle["solution"]],
+            difficulty=float(puzzle["difficulty"]),
+            blanks=int(puzzle["blanks"]),
+        )
+        for puzzle in raw["puzzles"]
+    ]
+
+
+def evaluate_puzzle_set(
+    *,
+    rollout_engine: VLLMRolloutEngine,
+    puzzles: list[SudokuPuzzle],
+    completions_per_puzzle: int,
+) -> float:
+    prompts: list[VLLMPrompt] = []
+    for puzzle in puzzles:
+        prompt: list[dict[str, object]] = []
+        for message in build_sudoku_prompt(puzzle):
+            prompt.append({"role": message["role"], "content": message["content"]})
+        prompts.append(prompt)
+    completions = rollout_engine.generate_completions(prompts, count=completions_per_puzzle)
+    solves = 0
+    total = 0
+    completion_index = 0
+    for puzzle in puzzles:
+        for _ in range(completions_per_puzzle):
+            completion = completions[completion_index]
+            completion_index += 1
+            total += 1
+            parsed = parse_solution_grid(completion, puzzle.size)
+            if exact_match(parsed, puzzle.solution, puzzle.size):
+                solves += 1
+    return solves / max(1, total)
+
+
 class SudokuEvalCallback:
     def __init__(
         self,
@@ -187,6 +236,36 @@ class SudokuEvalCallback:
             completion_count=self.periodic_eval_completions,
         )
         print(f"eval_step={metrics.step} exact_solve_rate={solves}/{self.periodic_eval_completions}", flush=True)
+
+    def on_completions(self, records: list[CompletionRecord]) -> None:
+        del records
+
+
+class SudokuValidationCallback:
+    def __init__(
+        self,
+        *,
+        rollout_engine: VLLMRolloutEngine,
+        puzzles: list[SudokuPuzzle],
+        eval_steps: int,
+        completions_per_puzzle: int,
+    ) -> None:
+        self.rollout_engine = rollout_engine
+        self.puzzles = puzzles
+        self.eval_steps = eval_steps
+        self.completions_per_puzzle = completions_per_puzzle
+
+    def on_step_end(self, metrics: StepMetrics) -> StepMetrics | None:
+        if metrics.step % self.eval_steps != 0:
+            return None
+
+        validation_reward = evaluate_puzzle_set(
+            rollout_engine=self.rollout_engine,
+            puzzles=self.puzzles,
+            completions_per_puzzle=self.completions_per_puzzle,
+        )
+        print(f"validation_step={metrics.step} exact_solution={validation_reward:.3f}", flush=True)
+        return replace(metrics, validation_reward_mean=validation_reward)
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
         del records

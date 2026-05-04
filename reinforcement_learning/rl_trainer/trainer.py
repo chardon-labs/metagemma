@@ -554,7 +554,9 @@ class RLTrainer:
             grpo_clip_ratio=grpo_clip_ratio,
         )
         for callback in self.callbacks:
-            callback.on_step_end(metrics)
+            updated_metrics = callback.on_step_end(metrics)
+            if updated_metrics is not None:
+                metrics = updated_metrics
 
     def _add_timings(self, left: StepTimings, right: StepTimings) -> StepTimings:
         return StepTimings(

@@ -13,16 +13,18 @@ from rich.table import Table
 
 from rl_trainer.types import CompletionRecord, StepMetrics, StepTimings
 
-MAX_HISTORY = 30
+MAX_HISTORY = 120
 RECENT_STEPS = 5
 MAX_COMPLETIONS = 2
 MAX_COMPLETION_CHARS = 140
 PLOT_HEIGHT = 8
-PLOT_MARGIN = 22
+PLOT_MARGIN = 12
+REWARD_Y_MIN = 0.0
+REWARD_Y_MAX = 1.0
 
 
 class TrainerCallback(Protocol):
-    def on_step_end(self, metrics: StepMetrics) -> None: ...
+    def on_step_end(self, metrics: StepMetrics) -> StepMetrics | None: ...
 
     def on_completions(self, records: list[CompletionRecord]) -> None: ...
 
@@ -90,9 +92,15 @@ class PrintCallback:
             f"loss_seq={latest.loss_sequence_fraction:.2f}  loss={latest.loss:.4f}  "
             f"lr={latest.learning_rate:.2e} raw_grad={latest.grad_norm:.3f} "
             f"clip={latest.grad_clip_scale:.2f}"
+            f"{self._validation_summary(latest)}"
             f"{self._reward_group_summary(latest)}"
             f"{self._grpo_summary(latest)}{self._timing_summary(latest)}{self._sync_summary(latest)}"
         )
+
+    def _validation_summary(self, metrics: StepMetrics) -> str:
+        if metrics.validation_reward_mean is None:
+            return ""
+        return f" val={metrics.validation_reward_mean:.3f}"
 
     def _reward_group_summary(self, metrics: StepMetrics) -> str:
         if metrics.reward_groups_kept is None or metrics.reward_groups_total is None:
@@ -166,15 +174,34 @@ class PrintCallback:
         steps = [metrics.step for metrics in self.history]
         rewards = [metrics.reward_mean for metrics in self.history]
         width = max(24, self.console.size.width - PLOT_MARGIN)
-        return plotille.plot(
-            steps,
-            rewards,
-            width=width,
-            height=PLOT_HEIGHT,
-            X_label="step",
-            Y_label="reward",
-            origin=False,
-        )
+        x_min, x_max = self._plot_x_limits(steps)
+        figure = plotille.Figure()
+        figure.width = width
+        figure.height = PLOT_HEIGHT
+        figure.x_label = "step"
+        figure.y_label = "reward"
+        figure.origin = False
+        figure.set_x_limits(min_=x_min, max_=x_max)
+        figure.set_y_limits(min_=REWARD_Y_MIN, max_=REWARD_Y_MAX)
+        figure.plot(steps, rewards, label="train")
+
+        validation_points = [
+            (metrics.step, metrics.validation_reward_mean)
+            for metrics in self.history
+            if metrics.validation_reward_mean is not None
+        ]
+        if validation_points:
+            validation_steps = [step for step, _reward in validation_points]
+            validation_rewards = [reward for _step, reward in validation_points]
+            figure.scatter(validation_steps, validation_rewards, label="val", marker="x")
+        return figure.show(legend=bool(validation_points))
+
+    def _plot_x_limits(self, steps: list[int]) -> tuple[int, int]:
+        first = min(steps)
+        last = max(steps)
+        if first == last:
+            return first, first + 1
+        return first, last
 
     def _reward_function_table(self) -> Table:
         table = Table(box=box.SIMPLE, padding=(0, 1), expand=False)
