@@ -14,6 +14,8 @@ class GRPOAlgorithmConfig:
     epsilon_high: float | None = None
     num_iterations: int = 1
     mini_batch_size: int | None = None
+    max_kept_groups: int | None = None
+    kept_group_multiple: int = 1
     name: Literal["grpo"] = "grpo"
 
 

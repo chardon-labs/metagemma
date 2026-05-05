@@ -31,7 +31,10 @@ VALIDATION_STEPS = 20
 VALIDATION_COMPLETIONS_PER_PUZZLE = 1
 
 GRPO_EPSILON = 0.2
-GRPO_MINI_BATCH_SIZE = 16
+GRPO_EPSILON_HIGH = 0.28
+GRPO_MINI_BATCH_SIZE = 32
+GRPO_MAX_KEPT_GROUPS = 16
+GRPO_KEPT_GROUP_MULTIPLE = 4
 
 VLLM_GPU_MEMORY_UTILIZATION = 0.20
 VLLM_TENSOR_PARALLEL_SIZE = 1
@@ -46,9 +49,9 @@ def build_training_config() -> RLTrainerConfig:
         warmup_ratio=0.0,
         warmup_steps=10,
         logging_steps=1,
-        batch_size=8,
+        batch_size=20,
         gradient_accumulation_steps=1,
-        num_generations=16,
+        num_generations=8,
         backward_microbatch_size=8,
         max_seq_length=MAX_SEQ_LENGTH,
         max_steps=MAX_STEPS,
@@ -61,8 +64,11 @@ def build_training_config() -> RLTrainerConfig:
         ),
         algorithm=GRPOAlgorithmConfig(
             epsilon=GRPO_EPSILON,
+            epsilon_high=GRPO_EPSILON_HIGH,
             num_iterations=1,
             mini_batch_size=GRPO_MINI_BATCH_SIZE,
+            max_kept_groups=GRPO_MAX_KEPT_GROUPS,
+            kept_group_multiple=GRPO_KEPT_GROUP_MULTIPLE,
         ),
         temperature=1.0,
         mask_truncated_completions=False,
@@ -78,7 +84,10 @@ def print_training_config(config: RLTrainerConfig) -> None:
         "grpo_curriculum_config "
         f"batch_size={config.batch_size} generations={config.num_generations} lr={LEARNING_RATE:.2e} "
         "optimizer=muon muon_adjust_lr=match_rms_adamw "
-        f"grpo_epsilon={GRPO_EPSILON:.2f} grpo_mini_batch={GRPO_MINI_BATCH_SIZE} "
+        f"grpo_epsilon={GRPO_EPSILON:.2f} grpo_epsilon_high={GRPO_EPSILON_HIGH:.2f} "
+        f"grpo_mini_batch={GRPO_MINI_BATCH_SIZE} "
+        f"grpo_max_kept_groups={GRPO_MAX_KEPT_GROUPS} "
+        f"grpo_kept_group_multiple={GRPO_KEPT_GROUP_MULTIPLE} "
         f"backward_microbatch={config.backward_microbatch_size} "
         f"max_grad_norm={config.max_grad_norm:.1f} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "

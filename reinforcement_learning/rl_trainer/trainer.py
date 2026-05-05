@@ -60,6 +60,7 @@ class _GroupFilterResult:
     rollout: RolloutBatch
     reward_result: RewardResult
     groups_kept: int
+    groups_eligible: int
     groups_total: int
 
 
@@ -119,6 +120,10 @@ class RLTrainer:
                 raise ValueError("GRPO num_iterations must be positive.")
             if algorithm.mini_batch_size is not None and algorithm.mini_batch_size <= 0:
                 raise ValueError("GRPO mini_batch_size must be positive when set.")
+            if algorithm.max_kept_groups is not None and algorithm.max_kept_groups <= 0:
+                raise ValueError("GRPO max_kept_groups must be positive when set.")
+            if algorithm.kept_group_multiple <= 0:
+                raise ValueError("GRPO kept_group_multiple must be positive.")
             if self.config.gradient_accumulation_steps != 1:
                 raise ValueError("GRPO currently expects gradient_accumulation_steps=1.")
 
@@ -127,7 +132,11 @@ class RLTrainer:
         if not isinstance(algorithm, GRPOAlgorithmConfig):
             return 1
 
-        rollout_size = self.config.batch_size * self.config.num_generations
+        group_count = self.config.batch_size
+        if algorithm.max_kept_groups is not None:
+            group_count = min(group_count, algorithm.max_kept_groups)
+            group_count -= group_count % algorithm.kept_group_multiple
+        rollout_size = group_count * self.config.num_generations
         mini_batch_size = algorithm.mini_batch_size or rollout_size
         return ceil(rollout_size / mini_batch_size) * algorithm.num_iterations
 
@@ -284,6 +293,7 @@ class RLTrainer:
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
                 reward_groups_kept=group_filter.groups_kept,
+                reward_groups_eligible=group_filter.groups_eligible,
                 reward_groups_total=group_filter.groups_total,
             ),
             timings=StepTimings(
@@ -406,6 +416,7 @@ class RLTrainer:
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
                 reward_groups_kept=group_filter.groups_kept,
+                reward_groups_eligible=group_filter.groups_eligible,
                 reward_groups_total=group_filter.groups_total,
             ),
             timings=StepTimings(
@@ -647,9 +658,11 @@ class RLTrainer:
         reward_result: RewardResult,
     ) -> _GroupFilterResult:
         grouped_rewards = reward_result.total.view(-1, self.config.num_generations)
-        keep_groups = grouped_rewards.std(dim=1).gt(0.0)
-        groups_total = int(keep_groups.numel())
-        groups_kept = int(keep_groups.sum().detach().cpu())
+        eligible_groups = grouped_rewards.std(dim=1).gt(0.0)
+        groups_total = int(eligible_groups.numel())
+        groups_eligible = int(eligible_groups.sum().detach().cpu())
+        selected_group_indices = self._selected_reward_group_indices(grouped_rewards, eligible_groups)
+        groups_kept = len(selected_group_indices)
 
         if groups_kept == groups_total or groups_kept == 0:
             return _GroupFilterResult(
@@ -657,9 +670,13 @@ class RLTrainer:
                 rollout=rollout,
                 reward_result=reward_result,
                 groups_kept=groups_kept,
+                groups_eligible=groups_eligible,
                 groups_total=groups_total,
             )
 
+        selected_groups = torch.tensor(selected_group_indices, dtype=torch.long, device=reward_result.total.device)
+        keep_groups = torch.zeros(groups_total, dtype=torch.bool, device=reward_result.total.device)
+        keep_groups[selected_groups] = True
         keep_group_list = [bool(keep) for keep in keep_groups.detach().cpu().tolist()]
         keep_rows = keep_groups.repeat_interleave(self.config.num_generations)
         keep_row_list = [bool(keep) for keep in keep_rows.detach().cpu().tolist()]
@@ -696,8 +713,35 @@ class RLTrainer:
             rollout=filtered_rollout,
             reward_result=filtered_reward_result,
             groups_kept=groups_kept,
+            groups_eligible=groups_eligible,
             groups_total=groups_total,
         )
+
+    def _selected_reward_group_indices(self, grouped_rewards: torch.Tensor, eligible_groups: torch.Tensor) -> list[int]:
+        eligible_indices = [int(index) for index in eligible_groups.nonzero(as_tuple=True)[0].detach().cpu().tolist()]
+        if not eligible_indices:
+            return []
+
+        algorithm = self.config.algorithm
+        max_kept_groups = None
+        kept_group_multiple = 1
+        if isinstance(algorithm, GRPOAlgorithmConfig):
+            max_kept_groups = algorithm.max_kept_groups
+            kept_group_multiple = algorithm.kept_group_multiple
+
+        keep_count = len(eligible_indices)
+        if max_kept_groups is not None:
+            keep_count = min(keep_count, max_kept_groups)
+        keep_count -= keep_count % kept_group_multiple
+        if keep_count <= 0:
+            return []
+
+        group_means = grouped_rewards.mean(dim=1).detach().cpu().tolist()
+        ranked_indices = sorted(
+            eligible_indices,
+            key=lambda index: (abs(float(group_means[index]) - 0.5), index),
+        )
+        return ranked_indices[:keep_count]
 
     def _loss_mask(self, completion_ids: torch.Tensor, completion_mask: torch.Tensor) -> torch.Tensor:
         if not self.config.mask_truncated_completions:
@@ -722,6 +766,7 @@ class RLTrainer:
         completion_mask: torch.Tensor,
         loss_mask: torch.Tensor,
         reward_groups_kept: int | None = None,
+        reward_groups_eligible: int | None = None,
         reward_groups_total: int | None = None,
     ) -> RLStepMetrics:
         lengths = completion_mask.sum(dim=1)
@@ -740,8 +785,12 @@ class RLTrainer:
             reward=self._reward_stats(reward_result),
             reward_groups=(
                 None
-                if reward_groups_kept is None or reward_groups_total is None
-                else RewardGroupStats(kept=reward_groups_kept, total=reward_groups_total)
+                if reward_groups_kept is None or reward_groups_eligible is None or reward_groups_total is None
+                else RewardGroupStats(
+                    kept=reward_groups_kept,
+                    eligible=reward_groups_eligible,
+                    total=reward_groups_total,
+                )
             ),
             unfiltered_reward=None if unfiltered_reward_result is None else self._reward_stats(unfiltered_reward_result),
         )

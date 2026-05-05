@@ -183,7 +183,10 @@ class PrintCallback:
     def _reward_group_summary(self, metrics: RLStepMetrics) -> str:
         if metrics.reward_groups is None:
             return ""
-        return f" groups={metrics.reward_groups.kept}/{metrics.reward_groups.total}"
+        return (
+            f" groups={metrics.reward_groups.kept}/"
+            f"{metrics.reward_groups.eligible}/{metrics.reward_groups.total}"
+        )
 
     def _grpo_summary(self, metrics: RLStepMetrics) -> str:
         if metrics.generic.grpo_clip_ratio is None:

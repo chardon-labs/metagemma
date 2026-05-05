@@ -136,6 +136,7 @@ class RewardStats:
 @dataclass(frozen=True)
 class RewardGroupStats:
     kept: int
+    eligible: int
     total: int
 
 
