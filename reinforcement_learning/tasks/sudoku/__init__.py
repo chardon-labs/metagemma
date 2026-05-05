@@ -1,4 +1,4 @@
-from tasks.sudoku.curriculum import CurriculumCallback, SudokuCurriculum
+from tasks.sudoku.curriculum import CurriculumCallback, SudokuCurriculum, SudokuStepMetrics
 from tasks.sudoku.dataset import SinglePuzzleDataset, SudokuDataset
 from tasks.sudoku.generator import generate_puzzle
 from tasks.sudoku.prompts import build_sudoku_prompt
@@ -16,6 +16,7 @@ __all__ = [
     "SudokuCurriculum",
     "SudokuDataset",
     "SudokuPuzzle",
+    "SudokuStepMetrics",
     "SudokuSpec",
     "build_sudoku_prompt",
     "exact_solution",

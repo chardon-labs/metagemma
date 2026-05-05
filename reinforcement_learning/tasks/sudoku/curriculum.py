@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
 from rl_trainer.callbacks import TrainerCallback
-from rl_trainer.types import CompletionRecord, StepMetrics
+from rl_trainer.types import CompletionRecord, RLStepMetrics
 
 
 @dataclass
@@ -11,8 +11,7 @@ class SudokuCurriculum:
     max_difficulty: float = 1.0
     window: int = 10
     score_ema_decay: float = 0.8
-    lower_score_threshold: float = 0.35
-    upper_score_threshold: float = 0.65
+    target_score: float = 0.5
     max_increase: float = 0.03
     max_decrease: float = 0.03
     history: list[dict[str, float]] = field(default_factory=list)
@@ -35,17 +34,14 @@ class SudokuCurriculum:
         return self.score_ema_decay * self.score_ema + (1.0 - self.score_ema_decay) * exact_score
 
     def _difficulty_delta(self, score: float) -> float:
-        if score >= self.upper_score_threshold:
-            span = max(1e-6, 1.0 - self.upper_score_threshold)
-            scale = min(1.0, (score - self.upper_score_threshold) / span)
+        if score >= self.target_score:
+            span = max(1e-6, 1.0 - self.target_score)
+            scale = min(1.0, (score - self.target_score) / span)
             return self.max_increase * scale
 
-        if score <= self.lower_score_threshold:
-            span = max(1e-6, self.lower_score_threshold)
-            scale = min(1.0, (self.lower_score_threshold - score) / span)
-            return -self.max_decrease * scale
-
-        return 0.0
+        span = max(1e-6, self.target_score)
+        scale = min(1.0, (self.target_score - score) / span)
+        return -self.max_decrease * scale
 
     def _averaged_metrics(self) -> dict[str, float]:
         if not self.history:
@@ -58,14 +54,28 @@ class SudokuCurriculum:
         }
 
 
+@dataclass(frozen=True)
+class SudokuStepMetrics:
+    rl: RLStepMetrics
+
+    @classmethod
+    def from_rl_metrics(cls, metrics: RLStepMetrics) -> "SudokuStepMetrics":
+        return cls(rl=metrics)
+
+    def curriculum_metrics(self) -> dict[str, float]:
+        reward = self.rl.unfiltered_reward or self.rl.reward
+        metrics = dict(reward.function_means)
+        metrics["reward_mean"] = reward.mean
+        return metrics
+
+
 class CurriculumCallback(TrainerCallback):
     def __init__(self, curriculum: SudokuCurriculum) -> None:
         self.curriculum = curriculum
 
-    def on_step_end(self, metrics: StepMetrics) -> None:
-        reward_metrics = dict(metrics.reward_function_means)
-        reward_metrics["reward_mean"] = metrics.reward_mean
-        self.curriculum.update(reward_metrics)
+    def on_step_end(self, metrics: RLStepMetrics) -> None:
+        sudoku_metrics = SudokuStepMetrics.from_rl_metrics(metrics)
+        self.curriculum.update(sudoku_metrics.curriculum_metrics())
         score_ema = self.curriculum.score_ema if self.curriculum.score_ema is not None else 0.0
         print(
             f"curriculum_difficulty={self.curriculum.difficulty:.3f} "

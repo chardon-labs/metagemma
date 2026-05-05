@@ -77,6 +77,7 @@ DATASET_SAMPLE_COUNTS = {
     "gsm8k": DEFAULT_DATASET_SAMPLE_COUNTS,
     "math500": DEFAULT_DATASET_SAMPLE_COUNTS,
     "mmlu_pro": DEFAULT_DATASET_SAMPLE_COUNTS,
+    "mmmlu": DEFAULT_DATASET_SAMPLE_COUNTS,
     "arc_challenge": DEFAULT_DATASET_SAMPLE_COUNTS,
     "truthfulqa_mc1": DEFAULT_DATASET_SAMPLE_COUNTS,
     "gpqa_diamond": DatasetSampleCounts(sft_count=160, eval_count=38),
@@ -257,6 +258,43 @@ def load_mmlu_pro(spec: DatasetSpec, seed: int) -> tuple[list[Problem], list[Pro
     return (
         [convert(cast(Mapping[str, Any], row), spec.sft_split) for row in sft_split],
         [convert(cast(Mapping[str, Any], row), spec.sft_split) for row in eval_split],
+    )
+
+
+def load_mmmlu(spec: DatasetSpec, seed: int) -> tuple[list[Problem], list[Problem]]:
+    dataset = _load_split(spec.dataset_id, spec.dataset_config, spec.sft_split)
+    sft_split, eval_split = _split_single_dataset(
+        dataset,
+        seed=seed,
+        sft_count=spec.sft_count,
+        eval_count=spec.eval_count,
+    )
+
+    def convert(row: Mapping[str, Any], split: str, index: int) -> Problem:
+        choices = [str(row[label]).strip() for label in LETTERS[:4]]
+        labels = list(LETTERS[: len(choices)])
+        question = str(row["Question"]).strip()
+        return _problem(
+            source_dataset=spec.dataset_id,
+            source_config=spec.dataset_config,
+            source_split=split,
+            source_id=f"{split}:{index}",
+            task_type=spec.task_type,
+            scorer=spec.scorer,
+            system_prompt=MCQ_SYSTEM_PROMPT,
+            user_prompt=_choice_prompt(question, labels, choices),
+            question=question,
+            gold_answer=str(row["Answer"]).strip(),
+            choices=choices,
+            choice_labels=labels,
+        )
+
+    return (
+        [convert(cast(Mapping[str, Any], row), spec.sft_split, index) for index, row in enumerate(sft_split)],
+        [
+            convert(cast(Mapping[str, Any], row), f"{spec.sft_split}:eval", index)
+            for index, row in enumerate(eval_split)
+        ],
     )
 
 
@@ -496,6 +534,18 @@ DATASET_SPECS = [
         sft_count=_sample_counts("mmlu_pro").sft_count,
         eval_count=_sample_counts("mmlu_pro").eval_count,
         loader=load_mmlu_pro,
+        sft_split="test",
+        eval_split="test",
+    ),
+    DatasetSpec(
+        name="mmmlu",
+        dataset_id="openai/MMMLU",
+        dataset_config="default",
+        task_type="multiple_choice",
+        scorer="multiple_choice_exact",
+        sft_count=_sample_counts("mmmlu").sft_count,
+        eval_count=_sample_counts("mmmlu").eval_count,
+        loader=load_mmmlu,
         sft_split="test",
         eval_split="test",
     ),

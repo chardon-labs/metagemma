@@ -111,24 +111,40 @@ class StepTimings:
 
 
 @dataclass(frozen=True)
-class StepMetrics:
+class GenericStepMetrics:
     step: int
     loss: float
-    reward_mean: float
-    reward_std: float
     completion_length_mean: float
     active_completion_length_mean: float
     loss_sequence_fraction: float
     learning_rate: float
     grad_norm: float
     grad_clip_scale: float
-    reward_function_means: dict[str, float]
     rollout_sync_stats: RolloutSyncStats | None = None
     timings: StepTimings | None = None
     grpo_clip_ratio: float | None = None
-    reward_groups_kept: int | None = None
-    reward_groups_total: int | None = None
-    validation_reward_mean: float | None = None
+    grad_norms: list[float] | None = None
+
+
+@dataclass(frozen=True)
+class RewardStats:
+    mean: float
+    std: float
+    function_means: dict[str, float]
+
+
+@dataclass(frozen=True)
+class RewardGroupStats:
+    kept: int
+    total: int
+
+
+@dataclass(frozen=True)
+class RLStepMetrics:
+    generic: GenericStepMetrics
+    reward: RewardStats
+    reward_groups: RewardGroupStats | None = None
+    unfiltered_reward: RewardStats | None = None
 
 
 @dataclass(frozen=True)

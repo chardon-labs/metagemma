@@ -59,13 +59,14 @@ class RLTrainerConfig:
     batch_size: int
     gradient_accumulation_steps: int
     num_generations: int
-    max_completion_length: int
+    max_seq_length: int
     max_steps: int
     logging_steps: int
     save_steps: int
     output_dir: Path
     optimizer: OptimizerConfig
     algorithm: AlgorithmConfig = field(default_factory=ReinforceAlgorithmConfig)
+    max_completion_length: int | None = None
     warmup_steps: int | None = None
     backward_microbatch_size: int | None = None
     temperature: float = 1.0

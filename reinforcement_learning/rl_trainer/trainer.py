@@ -22,17 +22,20 @@ from rl_trainer.rewards import score_rewards
 from rl_trainer.types import (
     CompletionRecord,
     GRPOLossInput,
+    GenericStepMetrics,
     LossInput,
     OptimizerFactory,
     PromptBatch,
     RewardBatch,
     RewardFunction,
+    RewardGroupStats,
     RewardResult,
+    RewardStats,
     RolloutBatch,
     RolloutEngine,
     RolloutSyncStats,
     SchedulerFactory,
-    StepMetrics,
+    RLStepMetrics,
     StepTimings,
     TrainingExample,
     TrainerState,
@@ -43,9 +46,10 @@ from rl_trainer.types import (
 @dataclass(frozen=True)
 class _MicrobatchResult:
     loss: float
-    metrics: StepMetrics
+    metrics: RLStepMetrics
     timings: StepTimings
     grad_norm: torch.Tensor | None = None
+    grad_norms: list[float] | None = None
     grpo_clip_ratio: float | None = None
     has_gradients: bool = True
 
@@ -169,6 +173,7 @@ class RLTrainer:
                     timings=result.timings,
                     loss_divisor=1.0,
                     grpo_clip_ratio=result.grpo_clip_ratio,
+                    grad_norms=result.grad_norms,
                 )
 
                 if self.config.save_steps > 0 and self.state.step % self.config.save_steps == 0:
@@ -176,7 +181,7 @@ class RLTrainer:
                 continue
 
             accumulated_loss = 0.0
-            latest_metrics: StepMetrics | None = None
+            latest_metrics: RLStepMetrics | None = None
             accumulated_has_gradients = False
             accumulated_timings = StepTimings(
                 rollout_seconds=0.0,
@@ -245,6 +250,7 @@ class RLTrainer:
             )
         )
         reward_seconds = perf_counter() - reward_start
+        unfiltered_reward_result = reward_result
         group_filter = self._filter_zero_variance_reward_groups(prompt_batch, rollout, reward_result)
         prompt_batch = group_filter.prompt_batch
         rollout = group_filter.rollout
@@ -274,6 +280,7 @@ class RLTrainer:
             metrics=self._metrics(
                 loss=loss,
                 reward_result=reward_result,
+                unfiltered_reward_result=unfiltered_reward_result,
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
                 reward_groups_kept=group_filter.groups_kept,
@@ -313,6 +320,7 @@ class RLTrainer:
             )
         )
         reward_seconds = perf_counter() - reward_start
+        unfiltered_reward_result = reward_result
         group_filter = self._filter_zero_variance_reward_groups(prompt_batch, rollout, reward_result)
         prompt_batch = group_filter.prompt_batch
         rollout = group_filter.rollout
@@ -335,6 +343,7 @@ class RLTrainer:
         total_loss = 0.0
         total_clip_ratio = 0.0
         total_grad_norm = 0.0
+        grad_norm_values: list[float] = []
         optimizer_update_count = 0
         optimizer_seconds = 0.0
         trainable_count = rollout.completion_ids.shape[0]
@@ -369,7 +378,9 @@ class RLTrainer:
 
                 total_loss += loss
                 total_clip_ratio += clip_ratio
-                total_grad_norm += float(grad_norm.detach().cpu())
+                grad_norm_value = float(grad_norm.detach().cpu())
+                total_grad_norm += grad_norm_value
+                grad_norm_values.append(grad_norm_value)
                 optimizer_update_count += 1
 
         self.state.step += 1
@@ -391,6 +402,7 @@ class RLTrainer:
             metrics=self._metrics(
                 loss=average_loss,
                 reward_result=reward_result,
+                unfiltered_reward_result=unfiltered_reward_result,
                 completion_mask=rollout.completion_mask,
                 loss_mask=loss_mask,
                 reward_groups_kept=group_filter.groups_kept,
@@ -405,6 +417,7 @@ class RLTrainer:
                 old_logprobs_seconds=old_logprobs_seconds,
             ),
             grad_norm=average_grad_norm,
+            grad_norms=grad_norm_values,
             grpo_clip_ratio=average_clip_ratio,
             has_gradients=optimizer_update_count > 0,
         )
@@ -546,35 +559,39 @@ class RLTrainer:
         self,
         *,
         accumulated_loss: float,
-        latest_metrics: StepMetrics | None,
+        latest_metrics: RLStepMetrics | None,
         grad_norm: torch.Tensor,
         timings: StepTimings,
         loss_divisor: float,
         grpo_clip_ratio: float | None = None,
+        grad_norms: list[float] | None = None,
     ) -> None:
         if latest_metrics is None or not self._should_log():
             return
 
-        metrics = StepMetrics(
-            step=self.state.step,
-            loss=accumulated_loss / loss_divisor,
-            reward_mean=latest_metrics.reward_mean,
-            reward_std=latest_metrics.reward_std,
-            completion_length_mean=latest_metrics.completion_length_mean,
-            active_completion_length_mean=latest_metrics.active_completion_length_mean,
-            loss_sequence_fraction=latest_metrics.loss_sequence_fraction,
-            learning_rate=self._learning_rate(),
-            grad_norm=float(grad_norm.detach().cpu()),
-            grad_clip_scale=self._grad_clip_scale(grad_norm),
-            reward_function_means=latest_metrics.reward_function_means,
-            rollout_sync_stats=self._rollout_sync_stats(),
-            timings=timings,
-            grpo_clip_ratio=grpo_clip_ratio,
+        metrics = RLStepMetrics(
+            generic=GenericStepMetrics(
+                step=self.state.step,
+                loss=accumulated_loss / loss_divisor,
+                completion_length_mean=latest_metrics.generic.completion_length_mean,
+                active_completion_length_mean=latest_metrics.generic.active_completion_length_mean,
+                loss_sequence_fraction=latest_metrics.generic.loss_sequence_fraction,
+                learning_rate=self._learning_rate(),
+                grad_norm=float(grad_norm.detach().cpu()),
+                grad_clip_scale=self._grad_clip_scale(grad_norm),
+                rollout_sync_stats=self._rollout_sync_stats(),
+                timings=timings,
+                grpo_clip_ratio=grpo_clip_ratio,
+                grad_norms=grad_norms,
+            ),
+            reward=latest_metrics.reward,
+            reward_groups=latest_metrics.reward_groups,
+            unfiltered_reward=latest_metrics.unfiltered_reward,
         )
         for callback in self.callbacks:
-            updated_metrics = callback.on_step_end(metrics)
-            if updated_metrics is not None:
-                metrics = updated_metrics
+            result = callback.on_step_end(metrics)
+            if isinstance(result, ValidationMetrics):
+                self._emit_validation_metrics(result)
 
     def _add_timings(self, left: StepTimings, right: StepTimings) -> StepTimings:
         return StepTimings(
@@ -701,32 +718,46 @@ class RLTrainer:
         *,
         loss: float,
         reward_result: RewardResult,
+        unfiltered_reward_result: RewardResult | None = None,
         completion_mask: torch.Tensor,
         loss_mask: torch.Tensor,
         reward_groups_kept: int | None = None,
         reward_groups_total: int | None = None,
-    ) -> StepMetrics:
-        reward_function_means = {
+    ) -> RLStepMetrics:
+        lengths = completion_mask.sum(dim=1)
+        active_lengths = loss_mask.sum(dim=1)
+        return RLStepMetrics(
+            generic=GenericStepMetrics(
+                step=self.state.step,
+                loss=loss,
+                completion_length_mean=float(lengths.mean().detach().cpu()),
+                active_completion_length_mean=float(active_lengths.mean().detach().cpu()),
+                loss_sequence_fraction=float(active_lengths.gt(0).to(torch.float32).mean().detach().cpu()),
+                learning_rate=self._learning_rate(),
+                grad_norm=0.0,
+                grad_clip_scale=1.0,
+            ),
+            reward=self._reward_stats(reward_result),
+            reward_groups=(
+                None
+                if reward_groups_kept is None or reward_groups_total is None
+                else RewardGroupStats(kept=reward_groups_kept, total=reward_groups_total)
+            ),
+            unfiltered_reward=None if unfiltered_reward_result is None else self._reward_stats(unfiltered_reward_result),
+        )
+
+    def _reward_stats(self, reward_result: RewardResult) -> RewardStats:
+        return RewardStats(
+            mean=float(reward_result.total.mean().detach().cpu()),
+            std=float(reward_result.total.std().detach().cpu()),
+            function_means=self._reward_function_means(reward_result),
+        )
+
+    def _reward_function_means(self, reward_result: RewardResult) -> dict[str, float]:
+        return {
             name: float(torch.nanmean(reward_result.per_function[:, index]).detach().cpu())
             for index, name in enumerate(reward_result.names)
         }
-        lengths = completion_mask.sum(dim=1)
-        active_lengths = loss_mask.sum(dim=1)
-        return StepMetrics(
-            step=self.state.step,
-            loss=loss,
-            reward_mean=float(reward_result.total.mean().detach().cpu()),
-            reward_std=float(reward_result.total.std().detach().cpu()),
-            completion_length_mean=float(lengths.mean().detach().cpu()),
-            active_completion_length_mean=float(active_lengths.mean().detach().cpu()),
-            loss_sequence_fraction=float(active_lengths.gt(0).to(torch.float32).mean().detach().cpu()),
-            learning_rate=self._learning_rate(),
-            grad_norm=0.0,
-            grad_clip_scale=1.0,
-            reward_function_means=reward_function_means,
-            reward_groups_kept=reward_groups_kept,
-            reward_groups_total=reward_groups_total,
-        )
 
     def _log_completions(
         self,

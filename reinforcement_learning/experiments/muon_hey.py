@@ -4,7 +4,7 @@ from experiments.utils.support import HeyDataset, build_vllm_engine, load_model_
 from rl_trainer import JSONLLogCallback, MuonOptimizerConfig, PrintCallback, ReinforceAlgorithmConfig, RLTrainer, RLTrainerConfig
 
 MODEL_NAME = "unsloth/gemma-4-E2B-it"
-MAX_SEQ_LENGTH = 8192
+MAX_SEQ_LENGTH = 2048
 MAX_COMPLETION_LENGTH = 256
 RANDOM_STATE = 3407
 LOAD_IN_4BIT = False
@@ -35,6 +35,7 @@ def build_training_config() -> RLTrainerConfig:
         gradient_accumulation_steps=1,
         num_generations=128,
         backward_microbatch_size=8,
+        max_seq_length=MAX_SEQ_LENGTH,
         max_completion_length=MAX_COMPLETION_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
@@ -61,7 +62,8 @@ def print_training_config(config: RLTrainerConfig) -> None:
         f"generations={config.num_generations} lr={LEARNING_RATE:.2e} "
         "muon_adjust_lr=match_rms_adamw "
         f"backward_microbatch={config.backward_microbatch_size} "
-        f"temperature={config.temperature:.2f} max_completion={config.max_completion_length} "
+        f"temperature={config.temperature:.2f} max_seq={config.max_seq_length} "
+        f"max_completion={config.max_completion_length} "
         f"thinking={ENABLE_THINKING} mask_truncated={config.mask_truncated_completions} "
         f"vllm_sync_steps={VLLM_SYNC_STEPS}",
         flush=True,
@@ -99,7 +101,7 @@ def main() -> None:
         reward_functions=[short_completion_reward],
         config=config,
         rollout_engine=rollout_engine,
-        callbacks=[PrintCallback(), JSONLLogCallback(OUTPUT_DIR / "logs")],
+        callbacks=[PrintCallback(reward_y_limits=None), JSONLLogCallback(OUTPUT_DIR / "logs")],
     )
     trainer.train()
 

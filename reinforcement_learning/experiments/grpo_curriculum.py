@@ -4,16 +4,17 @@ import torch
 
 from experiments.utils.support import (
     SudokuValidationCallback,
+    build_curriculum_print_callback,
     build_vllm_engine,
     load_model_and_tokenizer,
     load_sudoku_validation_puzzles,
 )
-from rl_trainer import GRPOAlgorithmConfig, JSONLLogCallback, MuonOptimizerConfig, PrintCallback, RLTrainer, RLTrainerConfig
+from rl_trainer import GRPOAlgorithmConfig, JSONLLogCallback, MuonOptimizerConfig, RLTrainer, RLTrainerConfig
 from rl_trainer.callbacks import TrainerCallback
 from tasks.sudoku import SUDOKU_REWARD_FUNCTIONS, CurriculumCallback, SudokuCurriculum, SudokuDataset
 
 MODEL_NAME = "unsloth/gemma-4-E2B-it"
-MAX_SEQ_LENGTH = 8192
+MAX_SEQ_LENGTH = 2048
 RANDOM_STATE = 3407
 LOAD_IN_4BIT = False
 FAST_INFERENCE = False
@@ -22,8 +23,8 @@ DATASET_SIZE = 1000
 MAX_STEPS = 240
 OUTPUT_DIR = Path("outputs/grpo_curriculum")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
-MAX_COMPLETION_LENGTH = 2048
-LEARNING_RATE = 5e-6
+LEARNING_RATE = 1e-5
+INITIAL_DIFFICULTY = 0.35
 MAX_GRAD_NORM = 5.0
 VALIDATION_SET_PATH = Path(__file__).resolve().parent / "fixtures" / "sudoku_validation_128.json"
 VALIDATION_STEPS = 20
@@ -49,7 +50,7 @@ def build_training_config() -> RLTrainerConfig:
         gradient_accumulation_steps=1,
         num_generations=16,
         backward_microbatch_size=8,
-        max_completion_length=MAX_COMPLETION_LENGTH,
+        max_seq_length=MAX_SEQ_LENGTH,
         max_steps=MAX_STEPS,
         save_steps=0,
         output_dir=OUTPUT_DIR,
@@ -81,7 +82,7 @@ def print_training_config(config: RLTrainerConfig) -> None:
         f"backward_microbatch={config.backward_microbatch_size} "
         f"max_grad_norm={config.max_grad_norm:.1f} "
         f"weight_decay={config.weight_decay:.3g} temperature={config.temperature:.2f} "
-        f"max_completion={config.max_completion_length} "
+        f"max_seq={config.max_seq_length} "
         f"mask_truncated={config.mask_truncated_completions} "
         f"vllm_sync_steps={VLLM_SYNC_STEPS}",
         flush=True,
@@ -109,7 +110,7 @@ def main() -> None:
         sync_chunk_bytes=VLLM_SYNC_CHUNK_BYTES,
         sync_backend=VLLM_SYNC_BACKEND,
     )
-    curriculum = SudokuCurriculum()
+    curriculum = SudokuCurriculum(difficulty=INITIAL_DIFFICULTY)
     dataset = SudokuDataset(
         size=DATASET_SIZE,
         curriculum=curriculum,
@@ -126,9 +127,9 @@ def main() -> None:
             eval_steps=VALIDATION_STEPS,
             completions_per_puzzle=VALIDATION_COMPLETIONS_PER_PUZZLE,
         ),
-        PrintCallback(),
-        JSONLLogCallback(OUTPUT_DIR / "logs"),
         CurriculumCallback(curriculum),
+        build_curriculum_print_callback(curriculum),
+        JSONLLogCallback(OUTPUT_DIR / "logs"),
     ]
 
     trainer = RLTrainer(

@@ -125,6 +125,18 @@ class TraceRequestResult:
     output: Any
 
 
+@dataclass
+class DatasetScoreStats:
+    correct: int = 0
+    total: int = 0
+
+    @property
+    def success_rate(self) -> float:
+        if self.total == 0:
+            return 0.0
+        return self.correct / self.total
+
+
 class TraceShardBuilder:
     def __init__(
         self,
@@ -149,6 +161,7 @@ class TraceShardBuilder:
         self.top_logprob_arrays: list[np.ndarray] = []
         self.top_mask_arrays: list[np.ndarray] = []
         self.shards: list[dict[str, str]] = []
+        self.dataset_score_stats: dict[str, DatasetScoreStats] = {}
 
     def add_completion(
         self,
@@ -199,6 +212,10 @@ class TraceShardBuilder:
             )
         else:
             score = score_completion(completion_text, problem)
+        dataset = str(problem["source_dataset"])
+        stats = self.dataset_score_stats.setdefault(dataset, DatasetScoreStats())
+        stats.correct += score.label
+        stats.total += 1
         row = {
             "row_id": self.row_id,
             "problem_id": int(problem["problem_id"]),
@@ -274,6 +291,21 @@ class TraceShardBuilder:
         self.top_token_id_arrays = []
         self.top_logprob_arrays = []
         self.top_mask_arrays = []
+
+    def dataset_success_table(self) -> str:
+        if not self.dataset_score_stats:
+            return "No scored completions."
+
+        dataset_width = max(len("Dataset"), *(len(dataset) for dataset in self.dataset_score_stats))
+        lines = [
+            f"{'Dataset':<{dataset_width}}  {'Success':>8}  {'Correct':>7}  {'Total':>5}",
+            f"{'-' * dataset_width}  {'-' * 8}  {'-' * 7}  {'-' * 5}",
+        ]
+        for dataset, stats in sorted(self.dataset_score_stats.items()):
+            lines.append(
+                f"{dataset:<{dataset_width}}  {stats.success_rate:>7.1%}  {stats.correct:>7}  {stats.total:>5}"
+            )
+        return "\n".join(lines)
 
 
 def build_prompt_request(
@@ -774,6 +806,7 @@ def main() -> None:
             datasets=dataset_manifest_entries(),
         ),
     )
+    LOGGER.info("Dataset success rates for generated completions:\n%s", builder.dataset_success_table())
 
 
 if __name__ == "__main__":

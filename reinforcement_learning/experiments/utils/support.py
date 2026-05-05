@@ -2,21 +2,47 @@ import contextlib
 import io
 import json
 import random
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from rl_trainer import RLTrainerConfig
+from rl_trainer import MetricSeries, PrintCallback, RecentMetric, RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
-from rl_trainer.types import CompletionRecord, RewardBatch, StepMetrics, TrainerState, ValidationMetrics
-from tasks.sudoku import build_sudoku_prompt, generate_puzzle
+from rl_trainer.types import CompletionRecord, RewardBatch, RLStepMetrics, TrainerState, ValidationMetrics
+from tasks.sudoku import SudokuCurriculum, build_sudoku_prompt, generate_puzzle
 from tasks.sudoku.parsing import parse_solution_grid
 from tasks.sudoku.types import SudokuPuzzle
 from tasks.sudoku.validation import exact_match
 
 VLLMPrompt = list[dict[str, object]] | list[dict[str, str | list[dict[str, str]]]]
+
+
+def build_curriculum_print_callback(curriculum: SudokuCurriculum) -> PrintCallback:
+    def difficulty(_metrics: RLStepMetrics) -> float:
+        return curriculum.difficulty
+
+    def score_ema(_metrics: RLStepMetrics) -> float | None:
+        return curriculum.score_ema
+
+    def delta(_metrics: RLStepMetrics) -> float:
+        return curriculum.last_delta
+
+    return PrintCallback(
+        metric_series=[
+            MetricSeries(
+                label="Difficulty",
+                y_label="difficulty",
+                value_fn=difficulty,
+                y_limits=(0.0, 1.0),
+            )
+        ],
+        recent_metrics=[
+            RecentMetric(label="Diff", value_fn=difficulty),
+            RecentMetric(label="EMA", value_fn=score_ema),
+            RecentMetric(label="Delta", value_fn=delta, precision=4, signed=True),
+        ],
+    )
 
 
 def load_model_and_tokenizer(
@@ -227,15 +253,18 @@ class SudokuEvalCallback:
         self.periodic_eval_steps = periodic_eval_steps
         self.periodic_eval_completions = periodic_eval_completions
 
-    def on_step_end(self, metrics: StepMetrics) -> None:
-        if metrics.step % self.periodic_eval_steps != 0:
+    def on_step_end(self, metrics: RLStepMetrics) -> None:
+        if metrics.generic.step % self.periodic_eval_steps != 0:
             return
         solves = evaluate_puzzle(
             rollout_engine=self.rollout_engine,
             puzzle=self.puzzle,
             completion_count=self.periodic_eval_completions,
         )
-        print(f"eval_step={metrics.step} exact_solve_rate={solves}/{self.periodic_eval_completions}", flush=True)
+        print(
+            f"eval_step={metrics.generic.step} exact_solve_rate={solves}/{self.periodic_eval_completions}",
+            flush=True,
+        )
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
         del records
@@ -258,12 +287,11 @@ class SudokuValidationCallback:
     def on_train_begin(self, state: TrainerState) -> ValidationMetrics:
         return self._evaluate(state.step)
 
-    def on_step_end(self, metrics: StepMetrics) -> StepMetrics | None:
-        if metrics.step % self.eval_steps != 0:
+    def on_step_end(self, metrics: RLStepMetrics) -> ValidationMetrics | None:
+        if metrics.generic.step % self.eval_steps != 0:
             return None
 
-        validation_metrics = self._evaluate(metrics.step)
-        return replace(metrics, validation_reward_mean=validation_metrics.reward_mean)
+        return self._evaluate(metrics.generic.step)
 
     def _evaluate(self, step: int) -> ValidationMetrics:
         validation_reward = evaluate_puzzle_set(

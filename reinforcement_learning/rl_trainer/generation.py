@@ -9,6 +9,25 @@ from rl_trainer.tensors import completion_mask
 from rl_trainer.types import Completion, PromptBatch, RolloutBatch, RolloutSyncStats, TokenBatch
 
 
+def completion_token_budget(
+    *,
+    max_seq_length: int,
+    input_tokens: int,
+    max_completion_length: int | None,
+) -> int:
+    budget = max_seq_length - input_tokens
+    if budget <= 0:
+        raise ValueError(
+            f"Prompt uses {input_tokens} tokens, leaving no completion budget "
+            f"within max_seq_length={max_seq_length}."
+        )
+    if max_completion_length is not None:
+        if max_completion_length <= 0:
+            raise ValueError("max_completion_length must be positive when set.")
+        budget = min(budget, max_completion_length)
+    return budget
+
+
 def patch_vllm_gemma4_shared_k_norm() -> None:
     try:
         gemma4 = import_module("vllm.model_executor.models.gemma4")
@@ -75,7 +94,7 @@ class TransformersRolloutEngine:
                 temperature=self.config.temperature,
                 top_p=self.config.top_p,
                 top_k=self.config.top_k,
-                max_new_tokens=self.config.max_completion_length,
+                max_new_tokens=self._max_new_tokens(token_batch.attention_mask),
                 pad_token_id=self.pad_token_id,
                 eos_token_id=self.eos_token_id,
                 return_dict_in_generate=True,
@@ -119,6 +138,14 @@ class TransformersRolloutEngine:
             input_ids=tokens["input_ids"].to(self.device),
             attention_mask=tokens["attention_mask"].to(self.device),
             prompt_texts=prompt_texts,
+        )
+
+    def _max_new_tokens(self, attention_mask: torch.Tensor) -> int:
+        input_tokens = int(attention_mask.sum(dim=1).max().detach().cpu())
+        return completion_token_budget(
+            max_seq_length=self.config.max_seq_length,
+            input_tokens=input_tokens,
+            max_completion_length=self.config.max_completion_length,
         )
 
     def _pad_token_id(self) -> int:
@@ -185,9 +212,13 @@ class VLLMRolloutEngine:
             for prompt_text in repeated_prompt_texts
         ]
         prompts = [{"prompt_token_ids": token_ids} for token_ids in prompt_token_lists]
+        sampling_params = [
+            self._sampling_params(max_tokens=self._max_tokens(token_ids))
+            for token_ids in prompt_token_lists
+        ]
         outputs = self.llm.generate(
             prompts,
-            self._sampling_params(),
+            sampling_params,
             use_tqdm=False,
         )
 
@@ -229,7 +260,11 @@ class VLLMRolloutEngine:
         ]
         prompt_token_lists = [self._encode_prompt(prompt_text) for prompt_text in prompt_texts]
         vllm_prompts = [{"prompt_token_ids": token_ids} for token_ids in prompt_token_lists]
-        outputs = self.llm.generate(vllm_prompts, self._sampling_params(), use_tqdm=False)
+        sampling_params = [
+            self._sampling_params(max_tokens=self._max_tokens(token_ids))
+            for token_ids in prompt_token_lists
+        ]
+        outputs = self.llm.generate(vllm_prompts, sampling_params, use_tqdm=False)
         return [str(output.outputs[0].text) for output in outputs]
 
     def sync_after_optimizer_step(self, *, model: Any, tokenizer: Any, step: int) -> None:
@@ -262,7 +297,7 @@ class VLLMRolloutEngine:
             tensor_parallel_size=self.tensor_parallel_size,
             gpu_memory_utilization=self.gpu_memory_utilization,
             trust_remote_code=self.trust_remote_code,
-            max_model_len=self.config.max_completion_length * 4,
+            max_model_len=self.config.max_seq_length,
             enforce_eager=self.enforce_eager,
         )
 
@@ -358,13 +393,20 @@ class VLLMRolloutEngine:
         ]
         return torch.tensor(ids, dtype=torch.long, device=self.device)
 
-    def _sampling_params(self) -> Any:
+    def _max_tokens(self, token_ids: list[int]) -> int:
+        return completion_token_budget(
+            max_seq_length=self.config.max_seq_length,
+            input_tokens=len(token_ids),
+            max_completion_length=self.config.max_completion_length,
+        )
+
+    def _sampling_params(self, *, max_tokens: int) -> Any:
         return self.sampling_params_cls(
             n=1,
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             top_k=self.config.top_k if self.config.top_k > 0 else -1,
-            max_tokens=self.config.max_completion_length,
+            max_tokens=max_tokens,
             skip_special_tokens=True,
         )
 
