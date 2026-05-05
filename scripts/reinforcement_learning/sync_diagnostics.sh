@@ -2,13 +2,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
-# shellcheck source=scripts/remote_config.sh
-source "$SCRIPT_DIR/remote_config.sh"
+# shellcheck source=scripts/remote/remote_config.sh
+source "$REPO_DIR/scripts/remote/remote_config.sh"
 require_remote_connection_config
 
-LOCAL_DIAGNOSTICS_ROOT="$REPO_DIR/data/diagnostics"
+LOCAL_DIAGNOSTICS_ROOT="$REPO_DIR/data/reinforcement_learning/diagnostics"
 REMOTE_CANDIDATE_ROOTS=(
   "${REMOTE_DIR%/}/reinforcement_learning/outputs"
   "${REMOTE_DIR%/}/outputs"

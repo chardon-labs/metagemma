@@ -36,12 +36,21 @@ class CombinedOptimizer:
 
 
 class LinearScheduler:
-    def __init__(self, optimizer: "OptimizerLike", *, warmup_ratio: float, max_steps: int) -> None:
+    def __init__(
+        self,
+        optimizer: "OptimizerLike",
+        *,
+        warmup_ratio: float,
+        warmup_steps: int | None,
+        max_steps: int,
+    ) -> None:
         self.optimizer = optimizer
-        self.warmup_steps = int(max_steps * warmup_ratio)
+        self.warmup_steps = warmup_steps if warmup_steps is not None else int(max_steps * warmup_ratio)
         self.max_steps = max_steps
         self.step_count = 0
         self.base_lrs = [float(group["lr"]) for group in optimizer.param_groups]
+        if self.warmup_steps < 0:
+            raise ValueError("warmup_steps must be non-negative.")
         self._apply_lrs()
 
     def step(self) -> None:
@@ -144,9 +153,10 @@ def build_linear_scheduler(
     optimizer: OptimizerLike,
     *,
     warmup_ratio: float,
+    warmup_steps: int | None,
     max_steps: int,
 ) -> LinearScheduler:
-    return LinearScheduler(optimizer, warmup_ratio=warmup_ratio, max_steps=max_steps)
+    return LinearScheduler(optimizer, warmup_ratio=warmup_ratio, warmup_steps=warmup_steps, max_steps=max_steps)
 
 
 def optimizer_from_parameters(

@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# shellcheck source=scripts/remote_config.sh
+# shellcheck source=scripts/remote/remote_config.sh
 source "$SCRIPT_DIR/remote_config.sh"
 require_remote_connection_config
 

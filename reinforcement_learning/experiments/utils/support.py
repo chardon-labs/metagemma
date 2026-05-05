@@ -10,7 +10,7 @@ import torch
 
 from rl_trainer import RLTrainerConfig
 from rl_trainer.generation import VLLMRolloutEngine
-from rl_trainer.types import CompletionRecord, RewardBatch, StepMetrics
+from rl_trainer.types import CompletionRecord, RewardBatch, StepMetrics, TrainerState, ValidationMetrics
 from tasks.sudoku import build_sudoku_prompt, generate_puzzle
 from tasks.sudoku.parsing import parse_solution_grid
 from tasks.sudoku.types import SudokuPuzzle
@@ -255,17 +255,24 @@ class SudokuValidationCallback:
         self.eval_steps = eval_steps
         self.completions_per_puzzle = completions_per_puzzle
 
+    def on_train_begin(self, state: TrainerState) -> ValidationMetrics:
+        return self._evaluate(state.step)
+
     def on_step_end(self, metrics: StepMetrics) -> StepMetrics | None:
         if metrics.step % self.eval_steps != 0:
             return None
 
+        validation_metrics = self._evaluate(metrics.step)
+        return replace(metrics, validation_reward_mean=validation_metrics.reward_mean)
+
+    def _evaluate(self, step: int) -> ValidationMetrics:
         validation_reward = evaluate_puzzle_set(
             rollout_engine=self.rollout_engine,
             puzzles=self.puzzles,
             completions_per_puzzle=self.completions_per_puzzle,
         )
-        print(f"validation_step={metrics.step} exact_solution={validation_reward:.3f}", flush=True)
-        return replace(metrics, validation_reward_mean=validation_reward)
+        print(f"validation_step={step} exact_solution={validation_reward:.3f}", flush=True)
+        return ValidationMetrics(step=step, reward_mean=validation_reward)
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
         del records

@@ -12,7 +12,7 @@ import numpy as np
 import pyarrow.parquet as pq
 
 
-TRACE_DIR = Path(os.environ.get("TRACE_DIR", "../data/traces/gemma-4-E2B-it-mixed-confidence-4"))
+TRACE_DIR = Path(os.environ.get("TRACE_DIR", "../traces/coding-agent-traces"))
 MAX_TEXT_CHARS = 4000
 CODING_TASK_TYPE = "coding_agent"
 CODING_SOURCE_DATASET = "sandbox_harness"

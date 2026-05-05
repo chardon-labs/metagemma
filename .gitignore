@@ -4,6 +4,9 @@ __pycache__/
 .venv/
 data/
 outputs/
+traces/
 repos/
 scripts/remote_instance.sh
 scripts/remote_instance.sh.tmp.*
+scripts/remote/remote_instance.sh
+scripts/remote/remote_instance.sh.tmp.*

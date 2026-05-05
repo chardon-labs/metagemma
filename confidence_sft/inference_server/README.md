@@ -24,7 +24,7 @@ produce the same completions for the same seed.
 ## Run
 
 ```bash
-cd inference_server
+cd confidence_sft/inference_server
 uv run python -m inference_server
 ```
 
@@ -37,7 +37,7 @@ http://127.0.0.1:8010
 For a public Vast.ai deployment, bind to all interfaces and set a shared token:
 
 ```bash
-cd inference_server
+cd confidence_sft/inference_server
 INFERENCE_HOST=0.0.0.0 INFERENCE_AUTH_TOKEN='replace-with-a-secret' uv run python -m inference_server
 ```
 
@@ -119,7 +119,7 @@ The frontend is served by FastAPI at `/` and calls `/complete/stream` on the sam
 The UI source is TypeScript in `static/app.ts`. Rebuild the served JavaScript after frontend edits:
 
 ```bash
-cd inference_server
+cd confidence_sft/inference_server
 bun install
 bun run build
 ```
@@ -127,6 +127,6 @@ bun run build
 ## Smoke Test
 
 ```bash
-cd inference_server
+cd confidence_sft/inference_server
 uv run inference-smoke-test
 ```

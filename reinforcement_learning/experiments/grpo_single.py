@@ -50,7 +50,8 @@ VLLM_SYNC_CHUNK_BYTES = 8 * 1024 * 1024 * 1024
 
 def build_training_config() -> RLTrainerConfig:
     return RLTrainerConfig(
-        warmup_ratio=0.03,
+        warmup_ratio=0.0,
+        warmup_steps=10,
         logging_steps=1,
         batch_size=1,
         gradient_accumulation_steps=1,

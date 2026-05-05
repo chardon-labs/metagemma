@@ -2,16 +2,16 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 
-# shellcheck source=scripts/remote_config.sh
+# shellcheck source=scripts/remote/remote_config.sh
 source "$SCRIPT_DIR/remote_config.sh"
 
 DELETE_ARGS=()
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/sync_remote.sh [--delete] [--dry-run]
+Usage: ./scripts/remote/sync_remote.sh [--delete] [--dry-run]
 
 Sync this repository to the remote /workspace/ directory, excluding local
 metadata, dependency directories, caches, generated outputs, and scripts.
@@ -20,7 +20,7 @@ Options:
   --delete   Delete remote files that do not exist locally.
   --dry-run  Show what would be synced without changing the remote.
 
-Environment overrides are defined in scripts/remote_config.sh.
+Environment overrides are defined in scripts/remote/remote_config.sh.
 USAGE
 }
 
@@ -56,6 +56,7 @@ EXCLUDES=(
   # Generated data, outputs, and vendored repos/artifacts.
   'data/'
   'outputs/'
+  'traces/'
   'repos/'
   'wandb/'
   'lightning_logs/'

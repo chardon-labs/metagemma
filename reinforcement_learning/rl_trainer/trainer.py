@@ -36,6 +36,7 @@ from rl_trainer.types import (
     StepTimings,
     TrainingExample,
     TrainerState,
+    ValidationMetrics,
 )
 
 
@@ -95,6 +96,7 @@ class RLTrainer:
             else build_linear_scheduler(
                 self.optimizer,
                 warmup_ratio=config.warmup_ratio,
+                warmup_steps=config.warmup_steps,
                 max_steps=config.max_steps * self.optimizer_updates_per_step,
             )
         )
@@ -134,11 +136,27 @@ class RLTrainer:
             seed=self.config.seed,
         )
         self.optimizer.zero_grad(set_to_none=True)
+        self._emit_train_begin()
 
         try:
             self._train_loop(batches)
         finally:
             self._close_callbacks()
+
+    def _emit_train_begin(self) -> None:
+        for callback in self.callbacks:
+            on_train_begin = getattr(callback, "on_train_begin", None)
+            if not callable(on_train_begin):
+                continue
+            result = on_train_begin(self.state)
+            if isinstance(result, ValidationMetrics):
+                self._emit_validation_metrics(result)
+
+    def _emit_validation_metrics(self, metrics: ValidationMetrics) -> None:
+        for callback in self.callbacks:
+            on_validation_end = getattr(callback, "on_validation_end", None)
+            if callable(on_validation_end):
+                on_validation_end(metrics)
 
     def _train_loop(self, batches: Iterator[list[TrainingExample]]) -> None:
         while self.state.step < self.config.max_steps:

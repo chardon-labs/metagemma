@@ -2,15 +2,17 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+CONFIDENCE_DIR="$REPO_DIR/confidence_sft"
 
-# shellcheck source=scripts/remote_config.sh
-source "$SCRIPT_DIR/remote_config.sh"
+# shellcheck source=scripts/remote/remote_config.sh
+source "$REPO_DIR/scripts/remote/remote_config.sh"
 require_remote_connection_config
 
-LOCAL_ARTIFACT_ROOT="$REPO_DIR/data"
-REMOTE_TRACE_DIR="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["trace_dir"])' "$REPO_DIR/project_settings.json")"
-REMOTE_OUTPUT_DIR="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["output_dir"])' "$REPO_DIR/project_settings.json")"
+LOCAL_ARTIFACT_ROOT="$REPO_DIR/data/confidence_sft"
+REMOTE_CONFIDENCE_ROOT="${REMOTE_DIR%/}/confidence_sft"
+REMOTE_TRACE_DIR="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["trace_dir"])' "$CONFIDENCE_DIR/project_settings.json")"
+REMOTE_OUTPUT_DIR="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["output_dir"])' "$CONFIDENCE_DIR/project_settings.json")"
 
 SSH_ARGS=(
   -i "$SSH_KEY"
@@ -24,7 +26,7 @@ sync_artifact_dir() {
   local remote_relative_dir="$1"
   local required="${2:-required}"
   local local_dir="$LOCAL_ARTIFACT_ROOT/$remote_relative_dir"
-  local remote_dir="${REMOTE_DIR%/}/$remote_relative_dir"
+  local remote_dir="$REMOTE_CONFIDENCE_ROOT/$remote_relative_dir"
 
   echo "Syncing $remote_dir -> $local_dir"
   mkdir -p "$local_dir"

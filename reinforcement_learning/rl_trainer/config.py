@@ -66,6 +66,7 @@ class RLTrainerConfig:
     output_dir: Path
     optimizer: OptimizerConfig
     algorithm: AlgorithmConfig = field(default_factory=ReinforceAlgorithmConfig)
+    warmup_steps: int | None = None
     backward_microbatch_size: int | None = None
     temperature: float = 1.0
     top_p: float = 1.0

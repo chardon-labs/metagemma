@@ -132,6 +132,13 @@ class StepMetrics:
 
 
 @dataclass(frozen=True)
+class ValidationMetrics:
+    step: int
+    reward_mean: float
+    name: str = "validation"
+
+
+@dataclass(frozen=True)
 class CompletionRecord:
     prompt: str
     completion: str

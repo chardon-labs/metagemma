@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-# shellcheck source=scripts/remote_config.sh
+# shellcheck source=scripts/remote/remote_config.sh
 source "$SCRIPT_DIR/remote_config.sh"
 require_remote_connection_config
 
@@ -54,7 +54,7 @@ fi
 
 if [[ ! -d "$REMOTE_DIR" ]]; then
   echo "Remote repo directory does not exist: $REMOTE_DIR" >&2
-  echo "Sync the repo first with ./scripts/sync_remote.sh, then rerun bootstrap." >&2
+  echo "Sync the repo first with ./scripts/remote/sync_remote.sh, then rerun bootstrap." >&2
   exit 1
 fi
 

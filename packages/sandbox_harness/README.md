@@ -17,5 +17,5 @@ The package intentionally has no model, dataset, or fine-tuning dependencies.
 Install from a caller project with:
 
 ```bash
-uv add ../sandbox_harness
+uv add ../../packages/sandbox_harness
 ```

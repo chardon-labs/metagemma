@@ -2,10 +2,14 @@
 
 REMOTE_CONFIG_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REMOTE_INSTANCE_CONFIG="${REMOTE_INSTANCE_CONFIG:-$REMOTE_CONFIG_DIR/remote_instance.sh}"
+LEGACY_REMOTE_INSTANCE_CONFIG="$REMOTE_CONFIG_DIR/../remote_instance.sh"
 
 if [[ -f "$REMOTE_INSTANCE_CONFIG" ]]; then
   # shellcheck source=/dev/null
   source "$REMOTE_INSTANCE_CONFIG"
+elif [[ -f "$LEGACY_REMOTE_INSTANCE_CONFIG" ]]; then
+  # shellcheck source=/dev/null
+  source "$LEGACY_REMOTE_INSTANCE_CONFIG"
 fi
 
 REMOTE_HOST="${REMOTE_HOST:-${VASTAI_REMOTE_HOST:-}}"
@@ -23,7 +27,7 @@ require_remote_connection_config() {
 
   cat >&2 <<EOF
 Missing Vast.ai SSH target.
-Run ./scripts/update_remote_instance.sh to write $REMOTE_INSTANCE_CONFIG.
+Run ./scripts/remote/update_remote_instance.sh to write $REMOTE_INSTANCE_CONFIG.
 EOF
   return 1
 }

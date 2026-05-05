@@ -1,6 +1,6 @@
 - Use `ty check {file.py}` for any Python file that you touch, for type checking. `ty` is installed globally. Avoid using `Any`, `object` or any other workarounds unless needed at boundaries.
-- If you need to execute Python with data-generation dependencies, run from `data_generation/` and use `data_generation/.venv/`.
-- If you need to execute Python with fine-tuning dependencies, run from `fine_tuning/` and use `fine_tuning/.venv/`.
+- If you need to execute Python with confidence data-generation dependencies, run from `confidence_sft/data_generation/` and use `confidence_sft/data_generation/.venv/`.
+- If you need to execute Python with confidence fine-tuning dependencies, run from `confidence_sft/fine_tuning/` and use `confidence_sft/fine_tuning/.venv/`.
 - Avoid CLI options for scripts, prefer hard-coded constants
 - Prefer concise responses without skipping on details. Prioritize information density.
-- The machine you're running on doesn't have an NVIDIA GPU, all training code can only run on the remote machine synced in `scripts/`
+- The machine you're running on doesn't have an NVIDIA GPU, all training code can only run on the remote machine synced by `scripts/remote/`

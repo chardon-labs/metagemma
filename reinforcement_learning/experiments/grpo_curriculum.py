@@ -23,7 +23,7 @@ MAX_STEPS = 240
 OUTPUT_DIR = Path("outputs/grpo_curriculum")
 FINAL_MODEL_DIR = OUTPUT_DIR / "final_model"
 MAX_COMPLETION_LENGTH = 2048
-LEARNING_RATE = 1e-6
+LEARNING_RATE = 5e-6
 MAX_GRAD_NORM = 5.0
 VALIDATION_SET_PATH = Path(__file__).resolve().parent / "fixtures" / "sudoku_validation_128.json"
 VALIDATION_STEPS = 20
@@ -42,7 +42,8 @@ VLLM_SYNC_CHUNK_BYTES = 8 * 1024 * 1024 * 1024
 
 def build_training_config() -> RLTrainerConfig:
     return RLTrainerConfig(
-        warmup_ratio=0.03,
+        warmup_ratio=0.0,
+        warmup_steps=10,
         logging_steps=1,
         batch_size=8,
         gradient_accumulation_steps=1,

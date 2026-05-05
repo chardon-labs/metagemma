@@ -1,5 +1,6 @@
 import json
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -11,14 +12,14 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 
-from rl_trainer.types import CompletionRecord, StepMetrics, StepTimings
+from rl_trainer.types import CompletionRecord, StepMetrics, StepTimings, ValidationMetrics
 
 MAX_HISTORY = 120
 RECENT_STEPS = 5
 MAX_COMPLETIONS = 2
 MAX_COMPLETION_CHARS = 140
 PLOT_HEIGHT = 8
-PLOT_MARGIN = 12
+PLOT_MARGIN = 48
 REWARD_Y_MIN = 0.0
 REWARD_Y_MAX = 1.0
 
@@ -32,6 +33,7 @@ class TrainerCallback(Protocol):
 class PrintCallback:
     def __init__(self) -> None:
         self.history: list[StepMetrics] = []
+        self.validation_history: list[ValidationMetrics] = []
         self.latest_completions: list[CompletionRecord] = []
         self.console = Console()
         self.live = Live(self._render(), console=self.console, refresh_per_second=4, transient=False)
@@ -42,7 +44,25 @@ class PrintCallback:
         self._start()
         self.history.append(metrics)
         self.history = self.history[-MAX_HISTORY:]
+        if metrics.validation_reward_mean is not None:
+            self._append_validation(
+                ValidationMetrics(step=metrics.step, reward_mean=metrics.validation_reward_mean)
+            )
         self.live.update(self._render(), refresh=True)
+
+    def on_validation_end(self, metrics: ValidationMetrics) -> None:
+        self._start()
+        self._append_validation(metrics)
+        self.live.update(self._render(), refresh=True)
+
+    def _append_validation(self, metrics: ValidationMetrics) -> None:
+        self.validation_history = [
+            item
+            for item in self.validation_history
+            if not (item.step == metrics.step and item.name == metrics.name)
+        ]
+        self.validation_history.append(metrics)
+        self.validation_history = self.validation_history[-MAX_HISTORY:]
 
     def on_completions(self, records: list[CompletionRecord]) -> None:
         self._start()
@@ -168,33 +188,31 @@ class PrintCallback:
         return table
 
     def _reward_plot(self) -> str:
-        if not self.history:
+        if not self.history and not self.validation_history:
             return "No reward history yet."
 
         steps = [metrics.step for metrics in self.history]
         rewards = [metrics.reward_mean for metrics in self.history]
-        width = max(24, self.console.size.width - PLOT_MARGIN)
-        x_min, x_max = self._plot_x_limits(steps)
+        width = max(24, min(140, self.console.size.width - PLOT_MARGIN))
+        validation_steps = [metrics.step for metrics in self.validation_history]
+        validation_rewards = [metrics.reward_mean for metrics in self.validation_history]
+        x_min, x_max = self._plot_x_limits(steps + validation_steps)
         figure = plotille.Figure()
         figure.width = width
         figure.height = PLOT_HEIGHT
         figure.x_label = "step"
         figure.y_label = "reward"
         figure.origin = False
+        figure.x_ticks_fkt = self._step_tick
+        figure.y_ticks_fkt = self._reward_tick
         figure.set_x_limits(min_=x_min, max_=x_max)
         figure.set_y_limits(min_=REWARD_Y_MIN, max_=REWARD_Y_MAX)
-        figure.plot(steps, rewards, label="train")
 
-        validation_points = [
-            (metrics.step, metrics.validation_reward_mean)
-            for metrics in self.history
-            if metrics.validation_reward_mean is not None
-        ]
-        if validation_points:
-            validation_steps = [step for step, _reward in validation_points]
-            validation_rewards = [reward for _step, reward in validation_points]
+        if steps:
+            figure.plot(steps, rewards, label="train")
+        if validation_steps:
             figure.scatter(validation_steps, validation_rewards, label="val", marker="x")
-        return figure.show(legend=bool(validation_points))
+        return figure.show(legend=bool(validation_steps))
 
     def _plot_x_limits(self, steps: list[int]) -> tuple[int, int]:
         first = min(steps)
@@ -202,6 +220,20 @@ class PrintCallback:
         if first == last:
             return first, first + 1
         return first, last
+
+    def _step_tick(self, value: int | float | datetime, next_value: int | float | datetime) -> str:
+        if isinstance(value, datetime) or isinstance(next_value, datetime):
+            return str(value)
+        step = round(value)
+        tick_width = abs(next_value - value)
+        if abs(value - step) <= max(0.05, tick_width / 2):
+            return str(int(step))
+        return ""
+
+    def _reward_tick(self, value: int | float | datetime, _next_value: int | float | datetime) -> str:
+        if isinstance(value, datetime):
+            return str(value)
+        return f"{value:.2f}"
 
     def _reward_function_table(self) -> Table:
         table = Table(box=box.SIMPLE, padding=(0, 1), expand=False)
@@ -245,6 +277,10 @@ class JSONLLogCallback:
         self.closed = False
 
     def on_step_end(self, metrics: StepMetrics) -> None:
+        self.metrics_file.write(json.dumps(asdict(metrics), sort_keys=True) + "\n")
+        self.metrics_file.flush()
+
+    def on_validation_end(self, metrics: ValidationMetrics) -> None:
         self.metrics_file.write(json.dumps(asdict(metrics), sort_keys=True) + "\n")
         self.metrics_file.flush()
 
